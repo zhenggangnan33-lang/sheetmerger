@@ -144,27 +144,24 @@ def _column_types(config, store: AliasStore, columns: list[str]) -> dict[str, st
     return types
 
 
-def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
-        cancel: threading.Event | None = None, export: bool = True) -> RunResult:
-    """执行完整任务。除取消外不会抛出异常，所有问题记入 result.issues。"""
-    t0 = time.perf_counter()
-    store = store or AliasStore()
-    issues = IssueCollector()
-    result = RunResult(output_path=None, issues=issues)
+def remap(plans: list[TablePlan], store: AliasStore,
+          column_mapping: dict[str, str] | None) -> list[TablePlan]:
+    """表头映射修改后重新生成映射建议（不重新读文件）。"""
+    out = []
+    for p in plans:
+        sugg, conflicts = suggest_for_columns(p.table.columns, store, column_mapping)
+        out.append(TablePlan(table=p.table, suggestions=sugg, conflicts=conflicts))
+    return out
 
-    progress(0, "扫描文件夹")
-    if not Path(config.input_folder or "").is_dir():
-        issues.add(ERROR, T_READ_FAIL, f"输入文件夹不存在：{config.input_folder}")
-        result.summary = aggregator.summarize(pd.DataFrame(columns=aggregator.SOURCE_COLUMNS),
-                                              [], [], issues)
-        result.detail = pd.DataFrame(columns=aggregator.SOURCE_COLUMNS)
-        result.elapsed = time.perf_counter() - t0
-        return result
-    refs = discover(config, issues)
-    plans, _ = plan_tables(config, store, issues, refs, progress, cancel, (2, 50))
-    result.files_total = count_files(config)
 
-    # ---- 表头映射结果写入问题清单
+def select_usable(config, store: AliasStore, plans: list[TablePlan],
+                  issues: IssueCollector | None = None
+                  ) -> tuple[list[tuple[TablePlan, list[str | None]]], list[str]]:
+    """决定哪些表参与合并、每列写入明细的列名，并登记映射相关问题。
+
+    返回 ([(方案, 每列目标列名)], 明细列顺序)。界面第 3 步也用它得到可选列。
+    """
+    issues = issues if issues is not None else IssueCollector()
     any_standard = any(p.standard_hits for p in plans)
     usable: list[tuple[TablePlan, list[str | None]]] = []
     for p in plans:
@@ -187,8 +184,31 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
                 issues.add(INFO, T_MAP_UNMATCHED, f"表头“{s.source}”未匹配到标准列，{how}",
                            file=t.rel, sheet=t.sheet, row=t.header_row, column=s.source)
         usable.append((p, p.resolved(config.accept_pending, config.keep_unmatched)))
-
     columns = _column_order([u[0] for u in usable], store, [u[1] for u in usable])
+    return usable, columns
+
+
+def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
+        cancel: threading.Event | None = None, export: bool = True) -> RunResult:
+    """执行完整任务。除取消外不会抛出异常，所有问题记入 result.issues。"""
+    t0 = time.perf_counter()
+    store = store or AliasStore()
+    issues = IssueCollector()
+    result = RunResult(output_path=None, issues=issues)
+
+    progress(0, "扫描文件夹")
+    if not Path(config.input_folder or "").is_dir():
+        issues.add(ERROR, T_READ_FAIL, f"输入文件夹不存在：{config.input_folder}")
+        result.summary = aggregator.summarize(pd.DataFrame(columns=aggregator.SOURCE_COLUMNS),
+                                              [], [], issues)
+        result.detail = pd.DataFrame(columns=aggregator.SOURCE_COLUMNS)
+        result.elapsed = time.perf_counter() - t0
+        return result
+    refs = discover(config, issues)
+    plans, _ = plan_tables(config, store, issues, refs, progress, cancel, (2, 50))
+    result.files_total = count_files(config)
+
+    usable, columns = select_usable(config, store, plans, issues)
     types = _column_types(config, store, columns)
     # "缺少列"只针对多数 Sheet 都有的标准列提示，避免个别表多出的列在其他表里刷屏
     with_rows = [set(filter(None, cols)) for p, cols in usable if p.table.rows]

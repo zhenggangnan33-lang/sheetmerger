@@ -3,13 +3,32 @@
 把一个文件夹里格式不完全一致的多个表格（xlsx / xls / xlsb / csv）合并、清洗、汇总，
 导出带"问题清单"的结果表。全部在本机处理，不联网。
 
-> 当前进度：**阶段 1（核心引擎 + 命令行）**。图形界面、打包说明在后续阶段补充。
+> 当前进度：**阶段 2（图形界面）**。打包说明在阶段 4 补充。
 
 ## 安装（开发环境）
 
 ```bash
 python -m pip install -r requirements.txt
 ```
+
+## 图形界面
+
+```bash
+python app.py
+```
+
+分步向导：
+
+1. **选择文件夹**：点“扫描”列出所有文件和 Sheet，取消勾选不需要的；双击“表头行”可手动修改。
+   打不开的文件以红字显示原因。
+2. **表头映射**：每个不同的原表头一行，颜色区分 自动（绿）/ 待确认（黄）/ 未匹配（红）/
+   手动（蓝）/ 忽略（灰）。在“映射到”中选择或输入列名即视为确认，确认结果默认写入别名字典。
+3. **汇总设置**：分组列（可多选、可拖动排序）、汇总列和方式、重复记录处理、输出位置。
+4. **运行**：后台运行并显示进度，可取消；完成后显示统计、问题清单预览，
+   可“打开结果文件”或“打开所在文件夹”。
+
+工具栏“保存配置 / 加载配置”保存或读取整个任务；加载后点“一键运行”即可直接生成结果。
+界面和命令行使用同一个配置文件格式和同一套处理流程，结果一致。
 
 ## 命令行用法
 
@@ -71,6 +90,8 @@ python cli.py --config 我的任务.json
 ```
 core/         读取、表头映射、清洗、校验、汇总、导出、流程编排（pipeline.py）
 config/       任务配置保存/加载
+gui/          分步向导界面（PySide6）
+app.py        图形界面入口
 cli.py        命令行入口
 tests/        测试与测试数据生成（python tests/generate_test_data.py）
 ```
@@ -79,7 +100,7 @@ tests/        测试与测试数据生成（python tests/generate_test_data.py�
 
 ```bash
 python tests/generate_test_data.py   # 重新生成 tests/test_data
-python -m pytest
+python -m pytest        # 界面测试在无显示器环境下自动使用 offscreen 模式
 ```
 
 用户学习到的别名保存在 `%APPDATA%\SheetMerger\aliases.json`（Windows）或 `~/.sheetmerger/aliases.json`，

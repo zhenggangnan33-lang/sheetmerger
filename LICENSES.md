@@ -17,7 +17,7 @@
 | lxml | openpyxl 的加速 XML 后端 | BSD-3-Clause |
 | rapidfuzz | 表头模糊匹配 | MIT |
 | charset-normalizer | CSV 编码识别 | MIT |
-| PySide6 / shiboken6（阶段 2） | 图形界面 | LGPL-3.0 |
+| PySide6 / shiboken6 | 图形界面 | LGPL-3.0 |
 
 ### LGPL（PySide6）注意事项
 - 以动态链接方式使用 PySide6，不修改其源码。
