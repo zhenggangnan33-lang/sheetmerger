@@ -18,7 +18,11 @@ TYPE_AUTO = "auto"   # 未指定类型：只做占位值和空白处理，保留
 
 # 统一视为空值的占位写法（比较前会做全角转半角、去空格、转小写）
 PLACEHOLDERS = {"", "无", "/", "-", "—", "——", "--", "---", "n/a", "na", "null", "none",
-                "#n/a", "空", "暂无"}
+                "空", "暂无"}
+# Excel 错误值：通常是公式出错，必须报出来，不能当作空值
+EXCEL_ERRORS = {"#N/A", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#NULL!",
+                "#GETTING_DATA", "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#错误"}
+ERR_EXCEL = "单元格是 Excel 错误值（公式出错）"
 
 _EXCEL_EPOCH = dt.datetime(1899, 12, 30)
 _MAX_EXCEL_SERIAL = 2958465          # 9999-12-31
@@ -58,6 +62,8 @@ def to_number(value: Any) -> tuple[float | int | None, str | None]:
         return (int(value) if value.is_integer() and abs(value) < 1e15 else value), None
     if isinstance(value, (dt.date, dt.datetime, dt.time)):
         return None, "单元格是日期/时间，不是数值"
+    if isinstance(value, str) and value.strip() in EXCEL_ERRORS:
+        return None, ERR_EXCEL
     s = re.sub(r"\s+", "", _norm_str(str(value)))
     s = _CURRENCY.sub("", s).replace(",", "")
     negative = False
@@ -119,9 +125,11 @@ def to_date(value: Any) -> tuple[dt.date | dt.datetime | None, str | None]:
     if isinstance(value, dt.timedelta):
         return None, "单元格是时长，不是日期"
     if isinstance(value, dt.time):
-        return None, "单元格只有时间，没有日期"
+        return None, "单元格只有时间，没有日期（若原值是 1900 年以前的日期，Excel 无法正确保存）"
 
     s = _norm_str(str(value))
+    if s in EXCEL_ERRORS:
+        return None, ERR_EXCEL
     m = _DATE_YMD.match(s)
     if m:
         parsed = _from_ymd(*(int(g) if g else 0 for g in m.groups()))

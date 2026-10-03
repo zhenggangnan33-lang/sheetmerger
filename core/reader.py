@@ -116,6 +116,13 @@ def list_sheets(path: Path) -> list[str]:
         wb.close()
 
 
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+# 东亚多字节编码：短文本时 charset-normalizer 容易在它们之间误判，面向中文用户统一优先按 GBK
+_CHINESE_ENCODINGS = {"gb2312", "gbk", "gb18030", "hz", "cp936", "euc_cn", "big5", "big5hkscs",
+                      "cp950", "cp949", "euc_kr", "johab", "shift_jis", "cp932", "euc_jp",
+                      "iso2022_jp", "iso2022_kr"}
+
+
 def decode_csv_bytes(data: bytes) -> tuple[str, str]:
     """自动识别 CSV 编码，返回 (文本, 编码名)。重点兼容 UTF-8(-BOM) 与 GBK。"""
     if data.startswith(b"\xef\xbb\xbf"):
@@ -126,17 +133,36 @@ def decode_csv_bytes(data: bytes) -> tuple[str, str]:
         return data.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
         pass
-    # 面向中文用户：能按 GB18030（GBK 超集）严格解码且含中文，优先采用
+    # 只含常用汉字的 GBK 文件能按 GB2312 严格解码，这是最常见的情况，直接认定
     try:
-        text = data.decode("gb18030")
-        if re.search(r"[一-鿿]", text):
-            return text, "gbk"
+        text = data.decode("gb2312")
+        if _CJK.search(text):
+            return data.decode("gb18030"), "gbk"
     except UnicodeDecodeError:
         pass
+    # 其余交给 charset-normalizer；识别为中文编码时统一用 GB18030（GBK 超集）解码
     from charset_normalizer import from_bytes
     best = from_bytes(data).best()
     if best is not None and best.encoding:
+        enc = best.encoding.lower().replace("-", "_")
+        if enc in _CHINESE_ENCODINGS:
+            try:
+                text = data.decode("gb18030")
+                if _CJK.search(text):
+                    return text, "gbk"
+            except UnicodeDecodeError:
+                pass
+        if not enc.startswith("utf"):
+            # 单字节编码之间短文本难以区分，Windows 上最常见的是 cp1252（西欧）
+            try:
+                return data.decode("cp1252"), "cp1252"
+            except UnicodeDecodeError:
+                pass
         return str(best), best.encoding
+    try:
+        return data.decode("gb18030"), "gbk"
+    except UnicodeDecodeError:
+        pass
     return data.decode("latin-1"), "latin-1"
 
 
@@ -147,10 +173,12 @@ def _read_csv_grid(path: Path) -> list[list[Any]]:
     text, _enc = decode_csv_bytes(data)
     sample = text[:8192]
     try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
-        delimiter = dialect.delimiter
+        delimiter = csv.Sniffer().sniff(sample, delimiters=",\t;|").delimiter
     except csv.Error:
-        delimiter = ","
+        # 各行列数不一致时 Sniffer 会失败，改按表头行中出现最多的分隔符判断
+        first = sample.split("\n", 1)[0]
+        counts = {d: first.count(d) for d in ",\t;|"}
+        delimiter = max(counts, key=counts.get) if any(counts.values()) else ","
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     return [[(c if c != "" else None) for c in row] for row in reader]
 
@@ -182,6 +210,51 @@ def _merged_ranges(path: Path, sheet_obj, sheet_name: str) -> list[tuple[int, in
     return []
 
 
+_ERROR_CELL = re.compile(rb'<c\b(?=[^>]*\bt="e")[^>]*\br="([A-Z]+)(\d+)"[^>]*>(.*?)</c>', re.S)
+_CELL_VALUE = re.compile(rb"<v>([^<]*)</v>")
+
+
+def _col_index(letters: bytes) -> int:
+    n = 0
+    for ch in letters:
+        n = n * 26 + (ch - 64)
+    return n - 1
+
+
+def _xlsx_error_cells(path: Path, sheet_name: str) -> dict[tuple[int, int], str]:
+    """找出 xlsx 中的 Excel 错误值单元格（#DIV/0!、#N/A 等），返回 {(行, 列): 错误文本}。
+
+    calamine 会把错误值读成空，这里补读，避免"静默丢弃"。文件中没有错误值时几乎没有开销。
+    """
+    import zipfile
+    from xml.etree import ElementTree as ET
+    try:
+        with zipfile.ZipFile(path) as zf:
+            ns_main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+            ns_rel = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+            r_id = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+            wb = ET.fromstring(zf.read("xl/workbook.xml"))
+            rid = next((s.get(r_id) for s in wb.iter(f"{ns_main}sheet")
+                        if s.get("name") == sheet_name), None)
+            rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+            target = next((r.get("Target") for r in rels.iter(f"{ns_rel}Relationship")
+                           if r.get("Id") == rid), None)
+            if not target:
+                return {}
+            name = target.lstrip("/") if target.startswith("/") else "xl/" + target
+            data = zf.read(name)
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile, ET.ParseError):
+        return {}
+    if b't="e"' not in data:
+        return {}
+    out = {}
+    for m in _ERROR_CELL.finditer(data):
+        v = _CELL_VALUE.search(m.group(3))
+        out[(int(m.group(2)) - 1, _col_index(m.group(1)))] = (
+            v.group(1).decode("utf-8", "replace") if v else "#错误")
+    return out
+
+
 def fill_merged(grid: list[list[Any]], ranges: list[tuple[int, int, int, int]]) -> None:
     """把合并区域左上角的值向下、向右填充到整个区域。"""
     for r1, c1, r2, c2 in ranges:
@@ -208,6 +281,13 @@ def read_grid(path: Path, sheet: str) -> list[list[Any]]:
         sh = wb.get_sheet_by_name(sheet)
         raw = sh.to_python(skip_empty_area=False)
         grid = [[(None if v == "" else v) for v in row] for row in raw]
+        if path.suffix.lower() in (".xlsx", ".xlsm"):
+            for (r, c), err in _xlsx_error_cells(path, sheet).items():
+                if r < len(grid):
+                    row = grid[r]
+                    if len(row) <= c:
+                        row.extend([None] * (c + 1 - len(row)))
+                    row[c] = err
         fill_merged(grid, _merged_ranges(path, sh, sheet))
         return grid
     finally:
