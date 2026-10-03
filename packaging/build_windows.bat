@@ -53,6 +53,7 @@ if exist dist\SheetMerger-cli.exe copy /y dist\SheetMerger-cli.exe "%OUT%\" >nul
 copy /y README.md "%OUT%\" >nul
 copy /y LICENSES.md "%OUT%\" >nul
 copy /y packaging\licenses\*.txt "%OUT%\licenses\" >nul
+copy /y packaging\release\* "%OUT%\" >nul
 
 echo.
 echo Done: %OUT%

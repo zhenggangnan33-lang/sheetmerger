@@ -73,6 +73,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$out\licenses" | Out-Null
           Copy-Item dist\SheetMerger.exe, dist\SheetMerger-cli.exe, README.md, LICENSES.md $out
           Copy-Item packaging\licenses\*.txt "$out\licenses"
+          Copy-Item packaging\release\* $out
+          # 检查“创建桌面快捷方式”脚本可用：运行后桌面上应出现快捷方式，且指向发布包中的 exe
+          cmd /c "`"$out\创建桌面快捷方式.bat`" /quiet"
+          if ($LASTEXITCODE -ne 0) { throw "创建快捷方式脚本失败" }
+          $lnk = Get-ChildItem ([Environment]::GetFolderPath('Desktop')) -Filter "SheetMerger*.lnk" | Select-Object -First 1
+          if (-not $lnk) { throw "桌面上没有找到快捷方式" }
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk.FullName).TargetPath
+          Write-Host "快捷方式：$($lnk.Name) -> $target"
+          if ($target -ne (Resolve-Path "$out\SheetMerger.exe").Path) { throw "快捷方式指向错误：$target" }
           "version=$ver" >> $env:GITHUB_OUTPUT
           Get-ChildItem $out | Format-Table Name, Length
 

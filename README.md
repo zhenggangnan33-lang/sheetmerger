@@ -14,8 +14,11 @@
 ## 一、安装
 
 1. 系统要求：Windows 10 / 11（64 位）。不需要安装 Excel 或 WPS（查看结果时需要）。
-2. 把 `SheetMerger_v1.0.0` 文件夹复制到任意位置，双击 `SheetMerger.exe` 即可运行，无需安装。
-3. 首次打开需要 5–15 秒（程序在解压运行文件），之后会快一些。
+2. 解压后把整个 `SheetMerger_v1.0.0` 文件夹放到固定位置（如 `D:\SheetMerger`），
+   双击 `SheetMerger.exe` 即可运行，无需安装。
+3. **创建桌面快捷方式**：双击文件夹里的 `创建桌面快捷方式.bat`，桌面会出现"SheetMerger 多表汇总"图标。
+   （也可以右键 `SheetMerger.exe` → 发送到 → 桌面快捷方式。之后如果移动了文件夹，需要重新创建。）
+4. 首次打开需要 5–15 秒（程序在解压运行文件），之后会快一些。
 
 > 如果出现"Windows 已保护你的电脑"：点"更多信息" → "仍要运行"。详见下方常见问题。
 
@@ -231,7 +234,8 @@ PyInstaller 不能跨平台生成 exe，必须在 Windows 上运行。
    脚本会：创建独立虚拟环境 `.venv-build` → 安装依赖 → 生成测试数据并跑全部测试（不通过则停止）
    → PyInstaller 打包 → 冒烟测试 → 组装发布目录。
 3. 发布目录 `dist\SheetMerger_v<版本号>\` 包含：
-   `SheetMerger.exe`（单文件，约 80–110 MB）、`README.md`、`LICENSES.md`、`licenses\`（LGPL-3.0 / GPL-3.0 原文）。
+   `SheetMerger.exe`（单文件，约 80–110 MB）、`创建桌面快捷方式.bat`、`README.md`、`LICENSES.md`、
+   `licenses\`（LGPL-3.0 / GPL-3.0 原文）。
 
 其他说明：
 - 版本号在 `core/__init__.py`，发布前同步修改 `packaging/version_info.txt`（exe 文件属性中显示）。
