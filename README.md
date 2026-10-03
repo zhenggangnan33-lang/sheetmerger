@@ -206,7 +206,21 @@ python tests/benchmark.py 50 10000    # 性能测试：50 个文件 × 1 万行
 
 ### 打包 Windows exe
 
-**必须在 Windows 上打包**（PyInstaller 不能跨平台生成 exe）。
+**方式一：GitHub 自动打包（推荐）**
+
+`.github/workflows/build-windows.yml` 会在 GitHub 的 Windows 服务器上自动测试并打包：
+
+- 推送到 `main`、提交 PR，或在仓库 **Actions → Windows 打包 → Run workflow** 手动运行；
+  完成后在该次运行页面底部的 **Artifacts** 中下载 `SheetMerger_v<版本号>_windows`
+  （内含 `SheetMerger.exe`、`SheetMerger-cli.exe`、说明和许可文件），保留 30 天。
+- 推送版本标签（如 `git tag v1.0.1 && git push origin v1.0.1`）时，另外自动创建
+  GitHub Release 并附上发布包，长期保存。
+- 流程：安装依赖 → 生成测试数据并跑全部测试 → PyInstaller 打包 →
+  冒烟测试（命令行版完整跑一遍测试数据；图形界面版启动 20 秒不退出）→ 上传。
+
+**方式二：在本机 Windows 上打包**
+
+PyInstaller 不能跨平台生成 exe，必须在 Windows 上运行。
 
 1. 安装 [Python 3.11 64 位](https://www.python.org/downloads/windows/)（勾选 "Add python.exe to PATH" 和 "py launcher"）。
 2. 在项目目录运行：

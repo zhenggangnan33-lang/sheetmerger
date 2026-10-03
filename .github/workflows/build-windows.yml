@@ -1,0 +1,104 @@
+# 在 GitHub 的 Windows 服务器上测试并打包 SheetMerger.exe
+# - 推送到 main / 提交 PR / 在 Actions 页面手动运行：生成可下载的构建产物（Artifacts）
+# - 推送 v* 标签（如 v1.0.1）：另外创建 GitHub Release 并附上发布包
+name: Windows 打包
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 生成测试数据并运行测试
+        run: |
+          python tests/generate_test_data.py
+          python -m pytest -q
+
+      - name: PyInstaller 打包
+        env:
+          SHEETMERGER_BUILD_CLI: "1"
+        run: pyinstaller --noconfirm --clean packaging/sheetmerger.spec
+
+      - name: 冒烟测试
+        env:
+          SHEETMERGER_HOME: ${{ runner.temp }}\sm_home
+        run: |
+          # 命令行版：用测试数据完整跑一遍，检查结果文件
+          .\dist\SheetMerger-cli.exe --input tests\test_data --group 门店 --sum 金额 --output build\smoke.xlsx
+          if ($LASTEXITCODE -ne 0) { throw "命令行版运行失败" }
+          if (-not (Test-Path build\smoke.xlsx)) { throw "没有生成结果文件" }
+          python -c "import openpyxl; wb = openpyxl.load_workbook(r'build\smoke.xlsx'); assert wb.sheetnames == ['汇总', '明细', '问题清单'], wb.sheetnames; print('结果文件 Sheet：', wb.sheetnames, '明细行数：', wb['明细'].max_row - 1)"
+          # 图形界面版：启动 20 秒仍在运行即视为正常（无显示器，使用 offscreen 模式）
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath .\dist\SheetMerger.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "图形界面版启动后退出，退出码 $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "图形界面版启动正常"
+
+      - name: 组装发布包
+        id: pack
+        run: |
+          $ver = python -c "from core import __version__; print(__version__)"
+          $out = "dist\SheetMerger_v$ver"
+          New-Item -ItemType Directory -Force -Path "$out\licenses" | Out-Null
+          Copy-Item dist\SheetMerger.exe, dist\SheetMerger-cli.exe, README.md, LICENSES.md $out
+          Copy-Item packaging\licenses\*.txt "$out\licenses"
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Get-ChildItem $out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SheetMerger_v${{ steps.pack.outputs.version }}_windows
+          path: dist/SheetMerger_v${{ steps.pack.outputs.version }}/
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifact
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifact
+          dir=$(ls -d SheetMerger_v*_windows | head -1)
+          zip -r "../${dir}.zip" "$dir"
+          cd ..
+          gh release create "${GITHUB_REF_NAME}" "${dir}.zip" --repo "${GITHUB_REPOSITORY}" \
+            --title "SheetMerger ${GITHUB_REF_NAME}" --generate-notes
