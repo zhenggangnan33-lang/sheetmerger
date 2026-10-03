@@ -221,7 +221,8 @@ python tests/benchmark.py 50 10000    # 性能测试：50 个文件 × 1 万行
 
 其他说明：
 - 版本号在 `core/__init__.py`，发布前同步修改 `packaging/version_info.txt`（exe 文件属性中显示）。
-- 程序图标：把 `app.ico` 放到 `packaging/` 目录即自动使用。
+- 程序图标：`packaging/app.ico`（exe 图标）和 `gui/app_icon.png`（窗口图标）由
+  `python packaging/make_icon.py` 生成；替换这两个文件即可更换图标。
 - **建议做代码签名**（signtool + 代码签名证书），可大幅减少 SmartScreen 提示和杀毒软件误报。
 - PySide6 为 LGPL-3.0：发布时必须附带 `licenses\` 目录和 `LICENSES.md`（打包脚本已自动复制）。
   单文件 exe 运行时会把 Qt 动态库解压为独立文件，用户可以替换；如需更稳妥，可改用

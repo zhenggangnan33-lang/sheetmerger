@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -30,6 +30,7 @@ from core.header_mapper import (STATUS_AUTO, STATUS_IGNORED, STATUS_MANUAL, STAT
 from core.validator import ERROR, INFO, WARNING, IssueCollector
 
 APP_TITLE = "SheetMerger 多表汇总工具"
+APP_ICON = Path(__file__).with_name("app_icon.png")
 STEP_TITLES = ["① 选择文件夹", "② 表头映射", "③ 汇总设置", "④ 运行"]
 
 KEEP_NAME = "（保留原表头）"
@@ -1000,8 +1001,17 @@ def _install_crash_handler() -> None:
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        # 让任务栏显示本程序的图标，而不是归到 Python 下
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SheetMerger.App")
+        except (AttributeError, OSError):
+            pass
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("SheetMerger")
+    if APP_ICON.exists():
+        app.setWindowIcon(QIcon(str(APP_ICON)))
     _install_crash_handler()
     win = MainWindow()
     win.show()

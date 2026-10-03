@@ -8,7 +8,8 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 with open(os.path.join(ROOT, "core", "__init__.py"), encoding="utf-8") as f:
     VERSION = re.search(r'__version__ = "([^"]+)"', f.read()).group(1)
 
-DATAS = [(os.path.join(ROOT, "core", "aliases_default.json"), "core")]
+DATAS = [(os.path.join(ROOT, "core", "aliases_default.json"), "core"),
+         (os.path.join(ROOT, "gui", "app_icon.png"), "gui")]
 
 # 运行时用不到的库，排除以减小体积
 EXCLUDES = [
