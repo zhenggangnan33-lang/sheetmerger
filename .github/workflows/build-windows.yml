@@ -79,7 +79,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "创建快捷方式脚本失败" }
           $lnk = Get-ChildItem ([Environment]::GetFolderPath('Desktop')) -Filter "SheetMerger*.lnk" | Select-Object -First 1
           if (-not $lnk) { throw "桌面上没有找到快捷方式" }
-          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk.FullName).TargetPath
+          # WScript.Shell 读不了含中文的路径（服务器非中文代码页），先复制成英文名再读取
+          $probe = Join-Path $env:RUNNER_TEMP 'probe.lnk'
+          Copy-Item -LiteralPath $lnk.FullName -Destination $probe -Force
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($probe).TargetPath
           Write-Host "快捷方式：$($lnk.Name) -> $target"
           if ($target -ne (Resolve-Path "$out\SheetMerger.exe").Path) { throw "快捷方式指向错误：$target" }
           "version=$ver" >> $env:GITHUB_OUTPUT
