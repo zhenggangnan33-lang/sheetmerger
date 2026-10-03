@@ -149,3 +149,23 @@ def test_background_thread_run(app, data_dir, tmp_path):
     assert w.last_result is not None and (tmp_path / "bg.xlsx").exists()
     assert w.act_run.isEnabled() and w.page_run.run_btn.isEnabled()
     w.close()
+
+
+def test_crash_handler_writes_local_log(app, isolated_home, monkeypatch):
+    import sys
+
+    from gui import main_window
+    shown = []
+    monkeypatch.setattr(main_window.QMessageBox, "critical", lambda *a: shown.append(a[2]))
+    old = sys.excepthook
+    try:
+        main_window._install_crash_handler()
+        try:
+            raise ValueError("测试异常")
+        except ValueError:
+            sys.excepthook(*sys.exc_info())
+    finally:
+        sys.excepthook = old
+    logs = list((isolated_home / "logs").glob("*.log"))
+    assert len(logs) == 1 and "测试异常" in logs[0].read_text(encoding="utf-8")
+    assert shown and "测试异常" in shown[0]

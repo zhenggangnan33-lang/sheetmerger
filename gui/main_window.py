@@ -24,9 +24,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from config.task_config import AggSpec, TaskConfig
-from core import aggregator, pipeline, reader
+from core import __version__, aggregator, pipeline, reader
 from core.header_mapper import (STATUS_AUTO, STATUS_IGNORED, STATUS_MANUAL, STATUS_PENDING,
-                                STATUS_UNMATCHED, AliasStore, normalize_header)
+                                STATUS_UNMATCHED, AliasStore, app_data_dir, normalize_header)
 from core.validator import ERROR, INFO, WARNING, IssueCollector
 
 APP_TITLE = "SheetMerger 多表汇总工具"
@@ -671,7 +671,7 @@ class MainWindow(QMainWindow):
     def __init__(self, store: AliasStore | None = None, sync: bool = False) -> None:
         """sync=True 时任务在当前线程同步执行（用于自动化测试）。"""
         super().__init__()
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle(f"{APP_TITLE} v{__version__}")
         self.resize(1100, 720)
         self.store = store or AliasStore()
         self.sync = sync
@@ -975,9 +975,34 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+def _install_crash_handler() -> None:
+    """未捕获的异常写入本地日志并弹窗提示，避免打包后的程序直接闪退。（只写本地文件，不联网）"""
+    import datetime as dt
+
+    def handler(exc_type, exc, tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        log_path = None
+        try:
+            log_dir = app_data_dir() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"错误日志_{dt.datetime.now():%Y%m%d}.log"
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"==== {dt.datetime.now():%Y-%m-%d %H:%M:%S} v{__version__}\n{text}\n")
+        except OSError:
+            pass
+        if QApplication.instance() is not None:
+            QMessageBox.critical(None, APP_TITLE,
+                                 "程序遇到意外错误，当前操作未完成。\n"
+                                 + (f"错误详情已保存到：\n{log_path}\n" if log_path else "")
+                                 + "\n" + text[-1500:])
+
+    sys.excepthook = handler
+
+
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("SheetMerger")
+    _install_crash_handler()
     win = MainWindow()
     win.show()
     return app.exec()

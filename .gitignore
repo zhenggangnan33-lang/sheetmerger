@@ -6,3 +6,4 @@ result.xlsx
 build/
 dist/
 *.spec.bak
+.venv-build/
