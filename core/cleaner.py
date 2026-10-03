@@ -1,0 +1,173 @@
+"""清洗：文本型数字转数值、占位值转空值、多格式日期解析。
+
+每个函数返回 (清洗后的值, 错误说明)。错误说明不为 None 时由调用方登记到问题清单，
+清洗后的值置为空，绝不静默丢弃。
+"""
+from __future__ import annotations
+
+import datetime as dt
+import math
+import re
+import unicodedata
+from typing import Any
+
+TYPE_TEXT = "text"
+TYPE_NUMBER = "number"
+TYPE_DATE = "date"
+TYPE_AUTO = "auto"   # 未指定类型：只做占位值和空白处理，保留原始类型
+
+# 统一视为空值的占位写法（比较前会做全角转半角、去空格、转小写）
+PLACEHOLDERS = {"", "无", "/", "-", "—", "——", "--", "---", "n/a", "na", "null", "none",
+                "#n/a", "空", "暂无"}
+
+_EXCEL_EPOCH = dt.datetime(1899, 12, 30)
+_MAX_EXCEL_SERIAL = 2958465          # 9999-12-31
+_CURRENCY = re.compile(r"(人民币|rmb|cny|元|¥|￥|\$)", re.IGNORECASE)
+_DATE_YMD = re.compile(
+    r"^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?"
+    r"(?:[ tT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.\d+)?)?)?$")
+_DATE_COMPACT = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
+_SERIAL = re.compile(r"^\d+(\.\d+)?$")
+
+
+def _norm_str(s: str) -> str:
+    return unicodedata.normalize("NFKC", s).strip()
+
+
+def is_placeholder(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    if isinstance(value, str):
+        return re.sub(r"\s+", "", _norm_str(value)).lower() in PLACEHOLDERS
+    return False
+
+
+# ---------------------------------------------------------------- 数值
+def to_number(value: Any) -> tuple[float | int | None, str | None]:
+    if is_placeholder(value):
+        return None, None
+    if isinstance(value, bool):
+        return None, "布尔值不能作为数值"
+    if isinstance(value, int):
+        return value, None
+    if isinstance(value, float):
+        if math.isinf(value):
+            return None, "数值为无穷大"
+        return (int(value) if value.is_integer() and abs(value) < 1e15 else value), None
+    if isinstance(value, (dt.date, dt.datetime, dt.time)):
+        return None, "单元格是日期/时间，不是数值"
+    s = re.sub(r"\s+", "", _norm_str(str(value)))
+    s = _CURRENCY.sub("", s).replace(",", "")
+    negative = False
+    if s.startswith("(") and s.endswith(")"):        # 会计格式负数 (1,234.00)
+        negative, s = True, s[1:-1]
+    percent = s.endswith("%")
+    if percent:
+        s = s[:-1]
+    try:
+        num = float(s)
+    except ValueError:
+        return None, "无法转换为数值"
+    if math.isnan(num) or math.isinf(num):
+        return None, "无法转换为数值"
+    if percent:
+        num /= 100
+    if negative:
+        num = -num
+    if num.is_integer() and abs(num) < 1e15 and not percent:
+        return int(num), None
+    return num, None
+
+
+# ---------------------------------------------------------------- 日期
+def _from_serial(num: float) -> dt.date | dt.datetime | None:
+    if not 1 <= num <= _MAX_EXCEL_SERIAL:
+        return None
+    value = _EXCEL_EPOCH + dt.timedelta(days=num)
+    return value.date() if float(num).is_integer() else value.replace(microsecond=0)
+
+
+def _from_ymd(y: int, m: int, d: int, hh: int = 0, mm: int = 0, ss: int = 0):
+    try:
+        value = dt.datetime(y, m, d, hh, mm, ss)
+    except ValueError:
+        return None
+    return value.date() if (hh, mm, ss) == (0, 0, 0) else value
+
+
+def to_date(value: Any) -> tuple[dt.date | dt.datetime | None, str | None]:
+    """兼容 2026-10-02、2026/10/2、20261002、2026年10月2日、Excel 序列号。"""
+    if is_placeholder(value):
+        return None, None
+    if isinstance(value, dt.datetime):
+        return (value.date() if value.time() == dt.time(0) else value.replace(microsecond=0)), None
+    if isinstance(value, dt.date):
+        return value, None
+    if isinstance(value, bool):
+        return None, "布尔值不能作为日期"
+    if isinstance(value, (int, float)):
+        if float(value).is_integer() and 19000101 <= value <= 29991231:
+            m = _DATE_COMPACT.match(str(int(value)))
+            parsed = _from_ymd(int(m[1]), int(m[2]), int(m[3])) if m else None
+            if parsed is not None:
+                return parsed, None
+            return None, "8 位数字不是有效的 年月日"
+        parsed = _from_serial(float(value))
+        return (parsed, None) if parsed is not None else (None, "数字超出 Excel 日期序列号范围")
+    if isinstance(value, dt.timedelta):
+        return None, "单元格是时长，不是日期"
+    if isinstance(value, dt.time):
+        return None, "单元格只有时间，没有日期"
+
+    s = _norm_str(str(value))
+    m = _DATE_YMD.match(s)
+    if m:
+        parsed = _from_ymd(*(int(g) if g else 0 for g in m.groups()))
+        return (parsed, None) if parsed is not None else (None, "年月日数值无效")
+    m = _DATE_COMPACT.match(s)
+    if m:
+        parsed = _from_ymd(int(m[1]), int(m[2]), int(m[3]))
+        return (parsed, None) if parsed is not None else (None, "8 位数字不是有效的 年月日")
+    if _SERIAL.match(s):
+        parsed = _from_serial(float(s))
+        return (parsed, None) if parsed is not None else (None, "数字超出 Excel 日期序列号范围")
+    return None, "无法识别的日期格式"
+
+
+# ---------------------------------------------------------------- 文本
+def to_text(value: Any) -> tuple[str | None, str | None]:
+    """文本列：统一转为字符串，整数型浮点去掉 .0，占位值转空。"""
+    if is_placeholder(value):
+        return None, None
+    if isinstance(value, float):
+        return (str(int(value)) if value.is_integer() else repr(value)), None
+    if isinstance(value, dt.datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S" if value.time() != dt.time(0) else "%Y-%m-%d"), None
+    if isinstance(value, dt.date):
+        return value.isoformat(), None
+    return str(value).strip(), None
+
+
+def to_auto(value: Any) -> tuple[Any, str | None]:
+    """未指定类型的列：只处理占位值和首尾空白。"""
+    if is_placeholder(value):
+        return None, None
+    if isinstance(value, str):
+        return value.strip(), None
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
+        return int(value), None
+    return value, None
+
+
+CONVERTERS = {
+    TYPE_NUMBER: to_number,
+    TYPE_DATE: to_date,
+    TYPE_TEXT: to_text,
+    TYPE_AUTO: to_auto,
+}
+
+
+def clean_value(value: Any, col_type: str) -> tuple[Any, str | None]:
+    return CONVERTERS.get(col_type, to_auto)(value)
