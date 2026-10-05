@@ -9,6 +9,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "同时发布 Release（版本号取自 core/__init__.py，标签 v<版本号> 会自动创建）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -95,7 +100,7 @@ jobs:
           retention-days: 30
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -112,5 +117,11 @@ jobs:
           dir=$(ls -d SheetMerger_v*_windows | head -1)
           zip -r "../${dir}.zip" "$dir"
           cd ..
-          gh release create "${GITHUB_REF_NAME}" "${dir}.zip" --repo "${GITHUB_REPOSITORY}" \
-            --title "SheetMerger ${GITHUB_REF_NAME}" --generate-notes
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            # 手动发布：标签取 v<版本号>，在本次构建的提交上创建
+            tag="v$(echo "$dir" | sed -E 's/^SheetMerger_v(.+)_windows$/\1/')"
+          fi
+          gh release create "$tag" "${dir}.zip" --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" --title "SheetMerger $tag" --generate-notes

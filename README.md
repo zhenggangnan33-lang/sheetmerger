@@ -216,8 +216,9 @@ python tests/benchmark.py 50 10000    # 性能测试：50 个文件 × 1 万行
 - 推送到 `main`、提交 PR，或在仓库 **Actions → Windows 打包 → Run workflow** 手动运行；
   完成后在该次运行页面底部的 **Artifacts** 中下载 `SheetMerger_v<版本号>_windows`
   （内含 `SheetMerger.exe`、`SheetMerger-cli.exe`、说明和许可文件），保留 30 天。
-- 推送版本标签（如 `git tag v1.0.1 && git push origin v1.0.1`）时，另外自动创建
-  GitHub Release 并附上发布包，长期保存。
+- **发布正式版本**：在 **Actions → Windows 打包 → Run workflow** 中勾选“同时发布 Release”后运行
+  （标签 `v<版本号>` 自动创建，版本号取自 `core/__init__.py`）；或推送版本标签
+  （如 `git tag v1.0.1 && git push origin v1.0.1`）。发布包附在仓库 **Releases** 页面，长期保存。
 - 流程：安装依赖 → 生成测试数据并跑全部测试 → PyInstaller 打包 →
   冒烟测试（命令行版完整跑一遍测试数据；图形界面版启动 20 秒不退出）→ 上传。
 
