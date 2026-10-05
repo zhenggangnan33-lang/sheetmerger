@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sum", "-s", action="append", help="求和列，可多次指定或用逗号分隔")
     p.add_argument("--agg", "-a", action="append",
                    help="汇总列:方式，方式为 求和/计数/平均/最大/最小，例如 金额:平均")
+    p.add_argument("--count-column", action="store_true", help="汇总表附加“记录数”列")
     p.add_argument("--dedup", choices=aggregator.DEDUP_MODES,
                    help="重复记录处理：off 不检查 / mark 只标记(默认) / drop 删除")
     p.add_argument("--dedup-cols", action="append", help="按哪些列判断重复，默认全部列")
@@ -71,6 +72,8 @@ def config_from_args(args: argparse.Namespace) -> TaskConfig:
         aggs.append(AggSpec(col.strip(), (func or "求和").strip()))
     if aggs:
         cfg.aggregations = aggs
+    if args.count_column:
+        cfg.add_count_column = True
     if args.dedup:
         cfg.dedup_mode = args.dedup
     if args.dedup_cols:

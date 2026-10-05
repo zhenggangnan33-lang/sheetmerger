@@ -71,11 +71,13 @@ def test_wizard_end_to_end(win, data_dir, tmp_path):
             page.group_list.item(k).setCheckState(Qt.Checked)
     assert page.agg_table.rowCount() == 1            # 默认 金额 求和
     page.add_agg("数量", "平均")
+    assert not page.count_box.isChecked()          # 默认不附加记录数
+    page.count_box.setChecked(True)
     page.out_dir.setText(str(tmp_path))
     page.out_name.setText("gui.xlsx")
     win.go_next()
     assert win.stack.currentIndex() == 3
-    assert win.config.group_by == ["门店"]
+    assert win.config.group_by == ["门店"] and win.config.add_count_column is True
     assert [(a.column, a.func) for a in win.config.aggregations] == [("金额", "求和"), ("数量", "平均")]
 
     # ④ 运行

@@ -43,7 +43,7 @@ def test_dedup_off():
 def test_summarize_all_funcs():
     issues = IssueCollector()
     aggs = [("金额", f) for f in ["求和", "计数", "平均", "最大", "最小"]] + [("日期", "最大")]
-    s = ag.summarize(_df(), ["门店"], aggs, issues)
+    s = ag.summarize(_df(), ["门店"], aggs, issues, add_count=True)
     assert list(s.columns) == ["门店", "金额(求和)", "金额(计数)", "金额(平均)", "金额(最大)",
                                "金额(最小)", "日期(最大)", "记录数"]
     rows = {r[0]: r for r in s.itertuples(index=False, name=None)}
@@ -57,7 +57,8 @@ def test_summarize_all_funcs():
 
 def test_summarize_no_group_and_bad_columns():
     issues = IssueCollector()
-    s = ag.summarize(_df(), ["不存在"], [("金额", "求和"), ("x", "求和"), ("金额", "中位数")], issues)
+    s = ag.summarize(_df(), ["不存在"], [("金额", "求和"), ("x", "求和"), ("金额", "中位数")], issues,
+                     add_count=True)
     assert list(s.columns) == ["项目", "金额(求和)", "记录数"]
     assert s.iloc[0].tolist() == ["总计", 260.5, 5]
     assert issues.count(ERROR) == 3
@@ -67,3 +68,14 @@ def test_normalize_agg_func():
     assert ag.normalize_agg_func("sum") == "求和"
     assert ag.normalize_agg_func("平均") == "平均"
     assert ag.normalize_agg_func("中位数") is None
+
+
+def test_count_column_optional():
+    issues = IssueCollector()
+    s = ag.summarize(_df(), ["门店"], [("金额", "求和")], issues)
+    assert list(s.columns) == ["门店", "金额(求和)"]           # 默认不附加记录数
+    assert s.iloc[-1].tolist() == ["总计", 260.5]
+    s = ag.summarize(_df(), ["门店"], [("金额", "求和")], issues, add_count=True)
+    assert list(s.columns) == ["门店", "金额(求和)", "记录数"]
+    s = ag.summarize(_df(), ["门店"], [], issues)               # 没有汇总列时仍保留记录数
+    assert list(s.columns) == ["门店", "记录数"]

@@ -435,11 +435,13 @@ class SettingsPage(QWidget):
         agg_box = QGroupBox("汇总列")
         agg_lay = QVBoxLayout(agg_box)
         agg_lay.addWidget(self.agg_table)
+        self.count_box = QCheckBox("附加“记录数”列（每组有多少条记录）")
         btns = QHBoxLayout()
         btns.addWidget(add_btn)
         btns.addWidget(del_btn)
         btns.addStretch(1)
         agg_lay.addLayout(btns)
+        agg_lay.addWidget(self.count_box)
 
         self.dedup_combo = QComboBox()
         for label, value in DEDUP_LABELS:
@@ -522,6 +524,7 @@ class SettingsPage(QWidget):
         aggs = cfg.aggregations or ([AggSpec("金额", "求和")] if "金额" in columns else [])
         for a in aggs:
             self.add_agg(a.column, a.func)
+        self.count_box.setChecked(cfg.add_count_column)
         idx = max(0, self.dedup_combo.findData(cfg.dedup_mode))
         self.dedup_combo.setCurrentIndex(idx)
         self._fill_checklist(self.dedup_list, columns, cfg.dedup_columns)
@@ -539,6 +542,7 @@ class SettingsPage(QWidget):
             if col:
                 aggs.append(AggSpec(col, func))
         cfg.aggregations = aggs
+        cfg.add_count_column = self.count_box.isChecked()
         cfg.dedup_mode = self.dedup_combo.currentData()
         cfg.dedup_columns = self._checked(self.dedup_list)
         cfg.output_dir = self.out_dir.text().strip()
@@ -608,7 +612,7 @@ class RunPage(QWidget):
             f"排除：{len(cfg.excluded)} 项；手动表头行：{len(cfg.header_rows)} 项；"
             f"手动映射：{len(cfg.column_mapping)} 项",
             f"分组列：{'、'.join(cfg.group_by) or '（不分组，只出总计）'}",
-            f"汇总列：{aggs}",
+            f"汇总列：{aggs}" + ("，附加记录数" if cfg.add_count_column else ""),
             f"重复记录：{dedup}"
             + (f"（按 {'、'.join(cfg.dedup_columns)}）" if cfg.dedup_columns else ""),
             f"输出文件：{cfg.output_dir or cfg.input_folder}/"

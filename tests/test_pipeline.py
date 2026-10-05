@@ -76,6 +76,7 @@ def test_source_columns_trace_back(cfg):
 
 
 def test_summary_total_matches_detail(cfg):
+    cfg.add_count_column = True
     result = pipeline.run(cfg)
     s = result.summary
     total = s[s["门店"] == "总计"]["金额(求和)"].iloc[0]
@@ -158,3 +159,26 @@ def test_cli_learn(data_dir, tmp_path, isolated_home):
     cli.main(["--input", str(data_dir), "--map", "单价/元=单价", "--learn", "--show-mapping"])
     from core.header_mapper import AliasStore, suggest
     assert suggest("单价/元", AliasStore()).status == "自动"
+
+
+def test_count_column_default_off_and_saved(cfg, tmp_path):
+    assert "记录数" not in pipeline.run(cfg, export=False).summary.columns
+    cfg.add_count_column = True
+    loaded = TaskConfig.load(cfg.save(tmp_path / "c.json"))
+    assert loaded.add_count_column is True
+    assert "记录数" in pipeline.run(loaded, export=False).summary.columns
+    # 旧版配置文件没有这个字段，按默认不附加
+    import json
+    data = json.loads((tmp_path / "c.json").read_text(encoding="utf-8"))
+    data.pop("add_count_column")
+    assert TaskConfig.from_dict(data).add_count_column is False
+
+
+def test_cli_count_column(data_dir, tmp_path):
+    import openpyxl
+    out = tmp_path / "r.xlsx"
+    assert cli.main(["-i", str(data_dir), "-g", "门店", "-s", "金额", "-o", str(out)]) == 0
+    assert [c.value for c in openpyxl.load_workbook(out)["汇总"][1]] == ["门店", "金额(求和)"]
+    assert cli.main(["-i", str(data_dir), "-g", "门店", "-s", "金额", "--count-column",
+                     "-o", str(out)]) == 0
+    assert [c.value for c in openpyxl.load_workbook(out)["汇总"][1]] == ["门店", "金额(求和)", "记录数"]

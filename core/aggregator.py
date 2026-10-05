@@ -142,8 +142,12 @@ def agg_column_name(column: str, func: str) -> str:
 
 
 def summarize(df: pd.DataFrame, group_by: list[str], aggs: list[tuple[str, str]],
-              issues: IssueCollector, add_total: bool = True) -> pd.DataFrame:
-    """分组汇总。aggs 为 [(列名, 汇总方式中文名)]。末尾附加"记录数"和总计行。"""
+              issues: IssueCollector, add_total: bool = True,
+              add_count: bool = False) -> pd.DataFrame:
+    """分组汇总。aggs 为 [(列名, 汇总方式中文名)]，末尾附加总计行。
+
+    add_count=True 时附加"记录数"列；没有任何有效汇总列时也会附加，否则汇总表没有内容。
+    """
     groups = [c for c in group_by if c in df.columns]
     for c in group_by:
         if c not in df.columns:
@@ -157,7 +161,8 @@ def summarize(df: pd.DataFrame, group_by: list[str], aggs: list[tuple[str, str]]
             issues.add(ERROR, T_AGG, f"不支持的汇总方式“{func}”，已忽略", column=col)
         else:
             valid_aggs.append((col, fn))
-    out_cols = groups + [agg_column_name(c, f) for c, f in valid_aggs] + [COL_COUNT]
+    with_count = add_count or not valid_aggs
+    out_cols = groups + [agg_column_name(c, f) for c, f in valid_aggs] + ([COL_COUNT] if with_count else [])
 
     rows: list[list[Any]] = []
     if groups:
@@ -168,11 +173,12 @@ def summarize(df: pd.DataFrame, group_by: list[str], aggs: list[tuple[str, str]]
             part = df.iloc[keyed[key]]
             row = [EMPTY_GROUP_LABEL if v is None else v for v in key]
             row += [_aggregate(part[c], f) for c, f in valid_aggs]
-            row.append(len(part))
+            if with_count:
+                row.append(len(part))
             rows.append(row)
     if add_total or not groups:
         total = ([TOTAL_LABEL] + [""] * (len(groups) - 1)) if groups else []
-        total += [_aggregate(df[c], f) for c, f in valid_aggs] + [len(df)]
+        total += [_aggregate(df[c], f) for c, f in valid_aggs] + ([len(df)] if with_count else [])
         rows.append(total)
     if not groups:
         out_cols = ["项目"] + out_cols

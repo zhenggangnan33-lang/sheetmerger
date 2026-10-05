@@ -254,7 +254,8 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
     detail = aggregator.deduplicate(detail, config.dedup_mode, config.dedup_columns, issues)
     progress(86, "分组汇总")
     summary = aggregator.summarize(detail, config.group_by,
-                                   [(a.column, a.func) for a in config.aggregations], issues)
+                                   [(a.column, a.func) for a in config.aggregations], issues,
+                                   add_count=config.add_count_column)
     result.detail, result.summary = detail, summary
     result.rows_detail = len(detail)
     result.files_ok = len(files_with_rows)

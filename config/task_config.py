@@ -31,6 +31,7 @@ class TaskConfig:
     keep_unmatched: bool = True      # "未匹配"的列是否按原表头保留到明细
     group_by: list[str] = field(default_factory=list)
     aggregations: list[AggSpec] = field(default_factory=list)
+    add_count_column: bool = False   # 汇总表是否附加“记录数”列（没有汇总列时总会附加）
     dedup_mode: str = "mark"         # off 不检查 / mark 只标记 / drop 删除重复
     dedup_columns: list[str] = field(default_factory=list)   # 为空表示按全部列
     output_dir: str = ""             # 为空时与输入文件夹相同
