@@ -531,7 +531,8 @@ class SettingsPage(QWidget):
         ordered = [c for c in checked if c in columns] + [c for c in columns if c not in checked]
         ordered += [c for c in checked if c not in columns]   # 配置里有、当前数据里没有的也保留
         for c in ordered:
-            widget.addItem(cls._make_item(c, c in checked, c in columns))
+            # 还没有扫描结果（如刚加载配置）时无法判断列是否存在，不标记为缺失
+            widget.addItem(cls._make_item(c, c in checked, not columns or c in columns))
 
     def add_group(self, name: str | None = None) -> QListWidgetItem | None:
         """添加一个自定义分组列（已在列表中则直接勾选）。"""

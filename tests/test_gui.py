@@ -201,3 +201,12 @@ def test_custom_group_column(win, data_dir, monkeypatch):
     # 重新进入第 3 步，自定义列仍在
     win.go_prev()
     assert "项目" in [page.group_list.item(i).text() for i in range(page.group_list.count())]
+
+
+def test_loaded_group_columns_not_grey_before_scan(win, data_dir):
+    win.apply_config(TaskConfig(input_folder="", group_by=["部门", "项目"]))
+    page = win.page_settings
+    items = [page.group_list.item(i) for i in range(page.group_list.count())]
+    assert [i.text() for i in items] == ["部门", "项目"]
+    assert all(not i.toolTip() for i in items)        # 未扫描前不显示“不存在”
+    assert win.config.group_by == ["部门", "项目"]
