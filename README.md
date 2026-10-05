@@ -14,7 +14,7 @@
 ## 一、安装
 
 1. 系统要求：Windows 10 / 11（64 位）。不需要安装 Excel 或 WPS（查看结果时需要）。
-2. 解压后把整个 `SheetMerger_v1.0.2` 文件夹放到固定位置（如 `D:\SheetMerger`），
+2. 解压后把整个 `SheetMerger_v1.0.3` 文件夹放到固定位置（如 `D:\SheetMerger`），
    双击 `SheetMerger.exe` 即可运行，无需安装。
 3. **创建桌面快捷方式**：双击文件夹里的 `创建桌面快捷方式.bat`，桌面会出现"SheetMerger 多表汇总"图标。
    （也可以右键 `SheetMerger.exe` → 发送到 → 桌面快捷方式。之后如果移动了文件夹，需要重新创建。）
@@ -134,6 +134,9 @@ Excel 每个 Sheet 最多约 104 万行，明细超出时自动续到"明细_2"�
 **WPS 能打开结果文件吗？**
 可以。结果文件是标准 xlsx 格式，Microsoft Excel 和 WPS 均可打开。
 
+**界面动画能关掉吗？**
+程序会跟随 Windows 设置：在"设置 → 辅助功能 → 视觉效果"中关闭"动画效果"后，程序也不再播放动画。
+
 **程序出错闪退怎么办？**
 程序会弹出错误说明，并把详细信息保存到 `%APPDATA%\SheetMerger\logs\`，把该日志发给技术支持即可。
 
@@ -192,7 +195,7 @@ python cli.py --help                  # 命令行
 ```
 core/          读取、表头映射、清洗、校验、汇总、导出、流程编排（pipeline.py）
 config/        任务配置保存 / 加载
-gui/           分步向导界面（PySide6）
+gui/           分步向导界面（PySide6）；theme.py 为配色、样式表与动效，widgets.py 为步骤条、统计卡片
 app.py         图形界面入口（打包主程序）
 cli.py         命令行入口
 tests/         测试、测试数据生成（generate_test_data.py）、性能测试（benchmark.py）

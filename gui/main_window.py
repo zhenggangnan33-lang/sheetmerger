@@ -17,11 +17,11 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
-                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+                               QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+                               QMainWindow, QMessageBox, QProgressBar,
                                QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
-                               QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from config.task_config import AggSpec, TaskConfig
 from core import __version__, aggregator, pipeline, reader
@@ -29,21 +29,31 @@ from core.header_mapper import (STATUS_AUTO, STATUS_IGNORED, STATUS_MANUAL, STAT
                                 STATUS_UNMATCHED, AliasStore, app_data_dir, normalize_header)
 from core.validator import ERROR, INFO, WARNING, IssueCollector
 
+from . import theme
+from .widgets import StatTile, StepBar
+
 APP_TITLE = "SheetMerger 多表汇总工具"
 APP_ICON = Path(__file__).with_name("app_icon.png")
-STEP_TITLES = ["① 选择文件夹", "② 表头映射", "③ 汇总设置", "④ 运行"]
+STEP_TITLES = ["选择文件夹", "表头映射", "汇总设置", "运行"]
 
 KEEP_NAME = "（保留原表头）"
 IGNORE = "（忽略此列）"
 
 STATUS_COLORS = {
-    STATUS_AUTO: "#E2EFDA",       # 绿：自动
-    STATUS_PENDING: "#FFF2CC",    # 黄：待确认
-    STATUS_UNMATCHED: "#F8CBAD",  # 红：未匹配
-    STATUS_MANUAL: "#DDEBF7",     # 蓝：已手动确认
-    STATUS_IGNORED: "#EDEDED",    # 灰：忽略
+    STATUS_AUTO: "#E7F6EE",       # 绿：自动
+    STATUS_PENDING: "#FFF4D6",    # 黄：待确认
+    STATUS_UNMATCHED: "#FDE7E4",  # 红：未匹配
+    STATUS_MANUAL: "#E6EFFD",     # 蓝：已手动确认
+    STATUS_IGNORED: "#F0F1F4",    # 灰：忽略
 }
-SEVERITY_COLORS = {ERROR: "#C00000", WARNING: "#C65911", INFO: "#595959"}
+SEVERITY_COLORS = {ERROR: theme.DANGER, WARNING: theme.WARNING, INFO: theme.MUTED}
+
+
+def _hint(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setObjectName("hint")
+    lab.setWordWrap(True)
+    return lab
 DEDUP_LABELS = [("只标记重复（保留全部记录）", aggregator.DEDUP_MARK),
                 ("删除重复（保留第一次出现的）", aggregator.DEDUP_DROP),
                 ("不检查重复", aggregator.DEDUP_OFF)]
@@ -113,6 +123,8 @@ class FolderPage(QWidget):
         browse.clicked.connect(self._browse)
         self.recursive_box = QCheckBox("包含子文件夹")
         self.scan_btn = QPushButton("扫描")
+        theme.set_role(self.scan_btn, "primary")
+        self.scan_btn.setMinimumWidth(90)
         self.scan_btn.clicked.connect(self.scan_requested)
 
         row = QHBoxLayout()
@@ -128,10 +140,14 @@ class FolderPage(QWidget):
         self.tree.header().setStretchLastSection(True)
         self.tree.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.tree.itemChanged.connect(self._item_changed)
+        self.tree.setAlternatingRowColors(True)
         self.summary = QLabel("请选择文件夹后点击“扫描”。勾选要参与汇总的 Sheet；双击“表头行”可手动修改。")
         self.summary.setWordWrap(True)
+        self.summary.setObjectName("hint")
 
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 12)
+        lay.setSpacing(10)
         lay.addLayout(row)
         lay.addWidget(self.tree, 1)
         lay.addWidget(self.summary)
@@ -235,6 +251,7 @@ class FolderPage(QWidget):
             self.tree.addTopLevelItem(top)
             top.setExpanded(True)
         self._loading = False
+        theme.fade_slide_in(self.tree, dy=10)
         bad = sum(1 for rel in scan.files if rel not in refs_by_file)
         self.summary.setText(f"共 {len(scan.files)} 个文件、{n_sheets} 个 Sheet"
                              + (f"，其中 {bad} 个文件无法读取（运行后会列入问题清单）" if bad else "")
@@ -285,7 +302,8 @@ class MappingPage(QWidget):
         legend.addWidget(QLabel("颜色说明："))
         for status in (STATUS_AUTO, STATUS_PENDING, STATUS_UNMATCHED, STATUS_MANUAL, STATUS_IGNORED):
             lab = QLabel(f"  {status}  ")
-            lab.setStyleSheet(f"background:{STATUS_COLORS[status]}; border:1px solid #BFBFBF;")
+            lab.setStyleSheet(f"background:{STATUS_COLORS[status]}; border:1px solid {theme.BORDER};"
+                              "border-radius:10px; padding:2px 8px;")
             legend.addWidget(lab)
         legend.addStretch(1)
         self.confirm_all_btn = QPushButton("全部“待确认”按建议确认")
@@ -300,15 +318,18 @@ class MappingPage(QWidget):
         header.setSectionResizeMode(self.COL_TARGET, QHeaderView.Interactive)
         header.setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.setShowGrid(False)
 
         self.accept_pending_box = QCheckBox("未确认的“待确认”项也按建议映射（会在问题清单中提示）")
         self.keep_unmatched_box = QCheckBox("未匹配的列按原表头保留到明细")
         self.learn_box = QCheckBox("把确认/修改过的映射写入别名字典，下次自动识别")
         self.learn_box.setChecked(True)
 
-        tip = QLabel("在“映射到”中选择或直接输入列名即视为确认；选择“（忽略此列）”则不导出该列。")
-        tip.setWordWrap(True)
+        tip = _hint("在“映射到”中选择或直接输入列名即视为确认；选择“（忽略此列）”则不导出该列。")
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 12)
+        lay.setSpacing(8)
         lay.addLayout(legend)
         lay.addWidget(tip)
         lay.addWidget(self.table, 1)
@@ -422,6 +443,7 @@ class SettingsPage(QWidget):
 
         self.group_list = QListWidget()
         self.group_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.group_list.setMinimumHeight(170)
         group_box = QGroupBox("分组列（可多选，可拖动调整顺序）")
         self.group_input = QComboBox()
         self.group_input.setEditable(True)
@@ -459,7 +481,10 @@ class SettingsPage(QWidget):
         for label, value in DEDUP_LABELS:
             self.dedup_combo.addItem(label, value)
         self.dedup_list = QListWidget()
-        self.dedup_list.setMaximumHeight(120)
+        self.dedup_list.setMaximumHeight(78)
+        self.dedup_list.setFlow(QListWidget.LeftToRight)   # 横向排列，节省高度
+        self.dedup_list.setWrapping(True)
+        self.dedup_list.setSpacing(2)
         dedup_box = QGroupBox("重复记录")
         dl = QFormLayout(dedup_box)
         dl.addRow("处理方式：", self.dedup_combo)
@@ -480,9 +505,12 @@ class SettingsPage(QWidget):
         ol.addRow("文件名：", self.out_name)
 
         top = QHBoxLayout()
+        top.setSpacing(12)
         top.addWidget(group_box, 1)
         top.addWidget(agg_box, 1)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 8, 18, 12)
+        lay.setSpacing(8)
         lay.addLayout(top, 1)
         lay.addWidget(dedup_box)
         lay.addWidget(out_box)
@@ -604,12 +632,18 @@ class RunPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.output_path: Path | None = None
-        self.overview = QPlainTextEdit()
-        self.overview.setReadOnly(True)
-        self.overview.setMaximumHeight(150)
+        # 任务概要：两列显示，避免占用太多高度
+        self.overview = QLabel("")
+        self.overview.setObjectName("overview")
+        self.overview.setWordWrap(True)
+        self.overview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.overview.setStyleSheet(f"QLabel#overview {{ background: #F7F9FC; border: 1px solid {theme.BORDER};"
+                                    "border-radius: 8px; padding: 8px 12px; }")
 
         self.run_btn = QPushButton("开始运行")
         self.run_btn.setMinimumHeight(36)
+        self.run_btn.setMinimumWidth(120)
+        theme.set_role(self.run_btn, "primary")
         self.run_btn.clicked.connect(self.run_requested)
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setEnabled(False)
@@ -617,8 +651,19 @@ class RunPage(QWidget):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.status = QLabel("")
+        self.status.setObjectName("muted")
         self.stats = QLabel("")
         self.stats.setWordWrap(True)
+        self.stats.setObjectName("muted")
+        self.stats.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 统计卡片：完成后数字依次滚动出现
+        self.tile_files = StatTile("处理文件")
+        self.tile_rows = StatTile("明细行数", theme.PRIMARY)
+        self.tile_errors = StatTile("错误", theme.DANGER)
+        self.tile_warnings = StatTile("警告", theme.WARNING)
+        self.tile_time = StatTile("用时", theme.SUCCESS, suffix=" 秒", decimals=1)
+        self.tiles = [self.tile_files, self.tile_rows, self.tile_errors, self.tile_warnings,
+                      self.tile_time]
         self.open_file_btn = QPushButton("打开结果文件")
         self.open_dir_btn = QPushButton("打开所在文件夹")
         for b in (self.open_file_btn, self.open_dir_btn):
@@ -633,39 +678,56 @@ class RunPage(QWidget):
         self.issue_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.issue_table.horizontalHeader().setStretchLastSection(True)
         self.issue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.issue_table.setAlternatingRowColors(True)
+        self.issue_table.setShowGrid(False)
+        self.issue_table.verticalHeader().setDefaultSectionSize(28)
 
         btns = QHBoxLayout()
         btns.addWidget(self.run_btn)
         btns.addWidget(self.cancel_btn)
-        btns.addStretch(1)
+        btns.addSpacing(8)
+        btns.addWidget(self.status, 1)
         btns.addWidget(self.open_file_btn)
         btns.addWidget(self.open_dir_btn)
+        tiles = QHBoxLayout()
+        tiles.setSpacing(10)
+        for t in self.tiles:
+            tiles.addWidget(t)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("任务概要："))
+        lay.setContentsMargins(18, 14, 18, 12)
+        lay.setSpacing(8)
         lay.addWidget(self.overview)
         lay.addLayout(btns)
         lay.addWidget(self.progress)
-        lay.addWidget(self.status)
+        lay.addLayout(tiles)
         lay.addWidget(self.stats)
-        lay.addWidget(QLabel("问题清单预览（完整内容见结果文件的“问题清单”Sheet）："))
+        lay.addWidget(_hint("问题清单预览（完整内容见结果文件的“问题清单”Sheet）"))
         lay.addWidget(self.issue_table, 1)
 
     def show_overview(self, cfg: TaskConfig) -> None:
         aggs = "、".join(f"{a.column}({aggregator.normalize_agg_func(a.func) or a.func})"
                         for a in cfg.aggregations) or "（无，仅统计记录数）"
         dedup = dict((v, k) for k, v in DEDUP_LABELS).get(cfg.dedup_mode, cfg.dedup_mode)
-        lines = [
-            f"输入文件夹：{cfg.input_folder}{'（含子文件夹）' if cfg.recursive else ''}",
-            f"排除：{len(cfg.excluded)} 项；手动表头行：{len(cfg.header_rows)} 项；"
-            f"手动映射：{len(cfg.column_mapping)} 项",
-            f"分组列：{'、'.join(cfg.group_by) or '（不分组，只出总计）'}",
-            f"汇总列：{aggs}" + ("，附加记录数" if cfg.add_count_column else ""),
-            f"重复记录：{dedup}"
-            + (f"（按 {'、'.join(cfg.dedup_columns)}）" if cfg.dedup_columns else ""),
-            f"输出文件：{cfg.output_dir or cfg.input_folder}/"
-            f"{cfg.output_name or '汇总结果_年月日_时分秒.xlsx'}",
+        import html
+        items = [
+            ("输入文件夹", f"{cfg.input_folder}{'（含子文件夹）' if cfg.recursive else ''}"),
+            ("分组列", "、".join(cfg.group_by) or "（不分组，只出总计）"),
+            ("汇总列", aggs + ("，附加记录数" if cfg.add_count_column else "")),
+            ("重复记录", dedup + (f"（按 {'、'.join(cfg.dedup_columns)}）" if cfg.dedup_columns else "")),
+            ("手动设置", f"排除 {len(cfg.excluded)} 项 · 表头行 {len(cfg.header_rows)} 项 · "
+                         f"映射 {len(cfg.column_mapping)} 项"),
+            ("输出文件", f"{cfg.output_dir or cfg.input_folder}/"
+                         f"{cfg.output_name or '汇总结果_年月日_时分秒.xlsx'}"),
         ]
-        self.overview.setPlainText("\n".join(lines))
+        self.overview_lines = [f"{k}：{v}" for k, v in items]
+        cell = (f'<td style="color:{theme.MUTED}; padding:2px 8px 2px 0; white-space:nowrap;">{{}}</td>'
+                '<td style="padding:2px 24px 2px 0;">{}</td>')
+        rows = []
+        for i in range(0, len(items), 2):
+            pair = items[i:i + 2]
+            rows.append("<tr>" + "".join(cell.format(html.escape(k), html.escape(v)) for k, v in pair)
+                        + "</tr>")
+        self.overview.setText(f'<table width="100%">{"".join(rows)}</table>')
 
     def set_running(self, running: bool) -> None:
         self.run_btn.setEnabled(not running)
@@ -673,23 +735,32 @@ class RunPage(QWidget):
         if running:
             self.progress.setValue(0)
             self.stats.setText("")
+            for t in self.tiles:
+                t.clear()
             self.issue_table.setRowCount(0)
             for b in (self.open_file_btn, self.open_dir_btn):
                 b.setEnabled(False)
 
     def on_progress(self, pct: int, msg: str) -> None:
-        self.progress.setValue(pct)
+        theme.smooth_value(self.progress, pct)
         self.status.setText(msg)
 
     def show_result(self, result: pipeline.RunResult) -> None:
         c = result.issue_counts
         self.output_path = result.output_path
-        text = (f"处理文件 {result.files_ok}/{result.files_total} 个，Sheet {result.sheets_read} 个，"
-                f"明细 {result.rows_detail} 行，用时 {result.elapsed:.1f} 秒。\n"
-                f"问题：错误 {c[ERROR]} 条，警告 {c[WARNING]} 条，提示 {c[INFO]} 条。")
+        anim = getattr(self.progress, "_smooth_anim", None)
+        if anim is not None:
+            anim.stop()
+        self.progress.setValue(100)
+        text = (f"共扫描 {result.files_total} 个文件，成功汇总 {result.files_ok} 个、"
+                f"{result.sheets_read} 个 Sheet；提示 {c[INFO]} 条。")
+        values = [result.files_ok, result.rows_detail, c[ERROR], c[WARNING], result.elapsed]
+        for i, (tile, v) in enumerate(zip(self.tiles, values)):
+            theme.count_up(tile, tile.set_value, v, duration=0.9, delay=i * 0.08)
+        theme.stagger_in(self.tiles, each=0.08, dy=12)
         if result.output_path:
             text += f"\n结果文件：{result.output_path}"
-            self.status.setText("完成")
+            self.status.setText("✓ 完成")
         else:
             self.status.setText("未能生成结果文件，请查看下方问题清单")
         self.stats.setText(text)
@@ -724,7 +795,8 @@ class MainWindow(QMainWindow):
         """sync=True 时任务在当前线程同步执行（用于自动化测试）。"""
         super().__init__()
         self.setWindowTitle(f"{APP_TITLE} v{__version__}")
-        self.resize(1100, 720)
+        self.resize(1200, 820)
+        self.setMinimumSize(960, 640)
         self.store = store or AliasStore()
         self.sync = sync
         self.config = TaskConfig(dedup_mode=aggregator.DEDUP_MARK)
@@ -743,41 +815,78 @@ class MainWindow(QMainWindow):
         for p in (self.page_folder, self.page_mapping, self.page_settings, self.page_run):
             self.stack.addWidget(p)
 
-        self.step_labels = [QLabel(t) for t in STEP_TITLES]
-        steps = QHBoxLayout()
-        for i, lab in enumerate(self.step_labels):
-            if i:
-                steps.addWidget(QLabel("  ›  "))
-            steps.addWidget(lab)
-        steps.addStretch(1)
-
-        self.prev_btn, self.next_btn = QPushButton("上一步"), QPushButton("下一步")
-        self.prev_btn.clicked.connect(self.go_prev)
-        self.next_btn.clicked.connect(self.go_next)
-        nav = QHBoxLayout()
-        self.busy_label = QLabel("")
-        nav.addWidget(self.busy_label, 1)
-        nav.addWidget(self.prev_btn)
-        nav.addWidget(self.next_btn)
-
-        central = QWidget()
-        lay = QVBoxLayout(central)
-        lay.addLayout(steps)
-        lay.addWidget(self.stack, 1)
-        lay.addLayout(nav)
-        self.setCentralWidget(central)
-
-        tb = QToolBar("操作")
-        tb.setMovable(False)
-        self.addToolBar(tb)
         self.act_load = QAction("加载配置", self)
         self.act_save = QAction("保存配置", self)
         self.act_run = QAction("一键运行", self)
         self.act_load.triggered.connect(self.load_config_dialog)
         self.act_save.triggered.connect(self.save_config_dialog)
         self.act_run.triggered.connect(self.one_click_run)
-        for a in (self.act_load, self.act_save, self.act_run):
-            tb.addAction(a)
+
+        # 顶部标题栏：图标 + 名称 + 配置操作
+        header = QWidget()
+        header.setObjectName("header")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(20, 12, 20, 12)
+        logo = QLabel()
+        if APP_ICON.exists():
+            logo.setPixmap(QIcon(str(APP_ICON)).pixmap(40, 40))
+        title_box = QVBoxLayout()
+        title_box.setSpacing(0)
+        title = QLabel(APP_TITLE)
+        title.setObjectName("appTitle")
+        subtitle = QLabel("表头不一致自动映射 · 问题精确定位 · 全部本地处理")
+        subtitle.setObjectName("appSubtitle")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        hl.addWidget(logo)
+        hl.addSpacing(8)
+        hl.addLayout(title_box)
+        hl.addStretch(1)
+        self.header_buttons = []
+        for act, role in ((self.act_load, "ghost"), (self.act_save, "ghost"),
+                          (self.act_run, "primary")):
+            b = QPushButton(act.text())
+            theme.set_role(b, role)
+            b.clicked.connect(act.trigger)
+            hl.addWidget(b)
+            self.header_buttons.append((act, b))
+
+        self.step_bar = StepBar(STEP_TITLES)
+
+        card = QFrame()
+        card.setObjectName("card")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.addWidget(self.stack)
+
+        self.prev_btn, self.next_btn = QPushButton("上一步"), QPushButton("下一步")
+        theme.set_role(self.next_btn, "primary")
+        for b in (self.prev_btn, self.next_btn):
+            b.setMinimumWidth(96)
+        self.prev_btn.clicked.connect(self.go_prev)
+        self.next_btn.clicked.connect(self.go_next)
+        nav = QHBoxLayout()
+        self.busy_label = QLabel("")
+        self.busy_label.setObjectName("muted")
+        nav.addWidget(self.busy_label, 1)
+        nav.addWidget(self.prev_btn)
+        nav.addWidget(self.next_btn)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(20, 4, 20, 14)
+        body.setSpacing(10)
+        body.addWidget(self.step_bar)
+        body.addWidget(card, 1)
+        body.addLayout(nav)
+
+        central = QWidget()
+        central.setObjectName("central")
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(header)
+        lay.addLayout(body, 1)
+        self.setCentralWidget(central)
 
         self.page_folder.scan_requested.connect(self.start_scan)
         self.page_run.run_requested.connect(self.start_run)
@@ -787,19 +896,26 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- 导航
     def _update_nav(self) -> None:
         idx = self.stack.currentIndex()
-        for i, lab in enumerate(self.step_labels):
-            lab.setStyleSheet("font-weight:bold; color:#1F4E79;" if i == idx else "color:#808080;")
+        if self.step_bar.current != idx:
+            self.step_bar.set_current(idx)
         busy = self.is_busy()
         self.prev_btn.setEnabled(idx > 0 and not busy)
         self.next_btn.setEnabled(idx < self.stack.count() - 1 and not busy)
         for a in (self.act_load, self.act_save, self.act_run):
             a.setEnabled(not busy)
+        for act, b in self.header_buttons:
+            b.setEnabled(act.isEnabled())
 
     def is_busy(self) -> bool:
         return self._thread is not None
 
     def _goto(self, idx: int) -> None:
+        old = self.stack.currentIndex()
         self.stack.setCurrentIndex(idx)
+        if idx != old:
+            # 翻页：新页面淡入，并从前进方向轻微滑入
+            theme.fade_slide_in(self.stack.currentWidget(), dx=28 if idx > old else -28, dy=0,
+                                duration=0.36)
         if idx == 3:
             self.page_run.show_overview(self.config)
         self._update_nav()
@@ -1067,6 +1183,7 @@ def main() -> int:
             pass
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("SheetMerger")
+    theme.apply_theme(app)
     if APP_ICON.exists():
         app.setWindowIcon(QIcon(str(APP_ICON)))
     _install_crash_handler()
