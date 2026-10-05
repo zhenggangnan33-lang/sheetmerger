@@ -423,7 +423,19 @@ class SettingsPage(QWidget):
         self.group_list = QListWidget()
         self.group_list.setDragDropMode(QAbstractItemView.InternalMove)
         group_box = QGroupBox("分组列（可多选，可拖动调整顺序）")
-        QVBoxLayout(group_box).addWidget(self.group_list)
+        self.group_input = QComboBox()
+        self.group_input.setEditable(True)
+        self.group_input.setInsertPolicy(QComboBox.NoInsert)
+        self.group_input.lineEdit().setPlaceholderText("输入或选择列名，如 部门、客户、项目…")
+        self.group_input.lineEdit().returnPressed.connect(lambda: self.add_group())
+        self.group_add_btn = QPushButton("添加分组列")
+        self.group_add_btn.clicked.connect(lambda: self.add_group())
+        add_row = QHBoxLayout()
+        add_row.addWidget(self.group_input, 1)
+        add_row.addWidget(self.group_add_btn)
+        group_lay = QVBoxLayout(group_box)
+        group_lay.addWidget(self.group_list)
+        group_lay.addLayout(add_row)
 
         self.agg_table = QTableWidget(0, 2)
         self.agg_table.setHorizontalHeaderLabels(["汇总列", "汇总方式"])
@@ -502,24 +514,58 @@ class SettingsPage(QWidget):
             self.agg_table.removeRow(r)
 
     @staticmethod
-    def _fill_checklist(widget: QListWidget, columns: list[str], checked: list[str]) -> None:
+    def _make_item(name: str, checked: bool, exists: bool) -> QListWidgetItem:
+        item = QListWidgetItem(name if exists else f"{name}")
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        item.setData(Qt.UserRole, name)
+        if not exists:
+            # 当前数据中没有这一列（自定义添加或来自旧配置）：灰色显示并说明
+            item.setForeground(QBrush(QColor("#9E9E9E")))
+            item.setToolTip("当前数据中没有这一列；如果运行时仍然没有，将被忽略并在问题清单中提示")
+        return item
+
+    @classmethod
+    def _fill_checklist(cls, widget: QListWidget, columns: list[str], checked: list[str]) -> None:
         widget.clear()
         ordered = [c for c in checked if c in columns] + [c for c in columns if c not in checked]
         ordered += [c for c in checked if c not in columns]   # 配置里有、当前数据里没有的也保留
         for c in ordered:
-            item = QListWidgetItem(c)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if c in checked else Qt.Unchecked)
-            widget.addItem(item)
+            widget.addItem(cls._make_item(c, c in checked, c in columns))
+
+    def add_group(self, name: str | None = None) -> QListWidgetItem | None:
+        """添加一个自定义分组列（已在列表中则直接勾选）。"""
+        name = (name if name is not None else self.group_input.currentText()).strip()
+        if not name:
+            return None
+        for i in range(self.group_list.count()):
+            item = self.group_list.item(i)
+            if item.data(Qt.UserRole) == name:
+                item.setCheckState(Qt.Checked)
+                self.group_list.setCurrentItem(item)
+                self.group_input.setEditText("")
+                return item
+        item = self._make_item(name, True, name in self.columns)
+        self.group_list.addItem(item)
+        self.group_list.setCurrentItem(item)
+        self.group_input.setEditText("")
+        return item
+
+    def missing_group_columns(self) -> list[str]:
+        """已勾选、但当前数据中不存在的分组列。"""
+        return [c for c in self._checked(self.group_list) if self.columns and c not in self.columns]
 
     @staticmethod
     def _checked(widget: QListWidget) -> list[str]:
-        return [widget.item(i).text() for i in range(widget.count())
-                if widget.item(i).checkState() == Qt.Checked]
+        return [widget.item(i).data(Qt.UserRole) or widget.item(i).text()
+                for i in range(widget.count()) if widget.item(i).checkState() == Qt.Checked]
 
     def populate(self, columns: list[str], cfg: TaskConfig) -> None:
         self.columns = columns
         self._fill_checklist(self.group_list, columns, cfg.group_by)
+        self.group_input.clear()
+        self.group_input.addItems(columns)
+        self.group_input.setEditText("")
         self.agg_table.setRowCount(0)
         aggs = cfg.aggregations or ([AggSpec("金额", "求和")] if "金额" in columns else [])
         for a in aggs:
@@ -776,6 +822,12 @@ class MainWindow(QMainWindow):
             self._learn(self.page_mapping.save_config(self.config))
             self._enter_settings()
         elif idx == 2:
+            missing = self.page_settings.missing_group_columns()
+            if missing and QMessageBox.question(
+                    self, APP_TITLE,
+                    f"以下分组列在当前数据中不存在：{'、'.join(missing)}\n"
+                    "运行时会被忽略并在问题清单中提示。仍要继续吗？") != QMessageBox.Yes:
+                return
             self.page_settings.save_config(self.config)
             self._goto(3)
 

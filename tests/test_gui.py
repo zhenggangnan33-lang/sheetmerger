@@ -171,3 +171,33 @@ def test_crash_handler_writes_local_log(app, isolated_home, monkeypatch):
     logs = list((isolated_home / "logs").glob("*.log"))
     assert len(logs) == 1 and "测试异常" in logs[0].read_text(encoding="utf-8")
     assert shown and "测试异常" in shown[0]
+
+
+def test_custom_group_column(win, data_dir, monkeypatch):
+    win.page_folder.folder_edit.setText(str(data_dir))
+    win.start_scan()
+    win.go_next()
+    win.go_next()
+    page = win.page_settings
+    # 输入数据中已有的列：直接勾选，不重复添加
+    count = page.group_list.count()
+    page.group_input.setEditText("经手人")
+    page.add_group()
+    assert page.group_list.count() == count and page.missing_group_columns() == []
+    # 自定义一个当前数据里没有的列：加入并勾选，标记为缺失
+    page.add_group("项目")
+    assert page.group_list.count() == count + 1
+    assert page.missing_group_columns() == ["项目"]
+    # 下一步时提示确认；选“否”停留在第 3 步
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question",
+                        lambda *a, **k: QtWidgets.QMessageBox.No)
+    win.go_next()
+    assert win.stack.currentIndex() == 2
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question",
+                        lambda *a, **k: QtWidgets.QMessageBox.Yes)
+    win.go_next()
+    assert win.stack.currentIndex() == 3
+    assert win.config.group_by == ["经手人", "项目"]
+    # 重新进入第 3 步，自定义列仍在
+    win.go_prev()
+    assert "项目" in [page.group_list.item(i).text() for i in range(page.group_list.count())]
