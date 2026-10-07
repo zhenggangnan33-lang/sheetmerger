@@ -19,7 +19,8 @@ from .header_mapper import (STATUS_AUTO, STATUS_IGNORED, STATUS_MANUAL, STATUS_P
                             suggest_for_columns)
 from .validator import (ERROR, INFO, WARNING, IssueCollector, T_AGG, T_BAD_DATE,
                         T_BAD_NUMBER, T_MAP_CONFLICT, T_MAP_PENDING, T_MAP_UNMATCHED, T_MISSING_COLUMN,
-                        T_NO_STD_COLUMN, T_READ_FAIL)
+                        T_NO_STD_COLUMN, T_READ_FAIL, T_EMPTY_VALUE, T_CODE_FIXED,
+                        T_DATE_NO_YEAR, T_NAME_MISMATCH)
 
 OUTPUT_PREFIX = "汇总结果_"     # 本工具生成的结果文件，扫描时跳过，避免重复汇总
 
@@ -211,6 +212,82 @@ def select_usable(config, store: AliasStore, plans: list[TablePlan],
     return usable, columns
 
 
+def _dominant_year(usable, types: dict[str, str]) -> int | None:
+    """日期列中写全了年份的日期里，出现最多的年份（用于补全“9.30”这类没写年份的日期）。"""
+    counts: dict[int, int] = {}
+    for p, targets in usable:
+        idx = [i for i, c in enumerate(targets) if c and types.get(c) == cleaner.TYPE_DATE]
+        if not idx:
+            continue
+        for _row, values in p.table.rows:
+            for i in idx:
+                d, err = cleaner.to_date(values[i])
+                if d is not None and not err:
+                    counts[d.year] = counts.get(d.year, 0) + 1
+    return max(counts, key=counts.get) if counts else None
+
+
+def _pad_numeric_codes(records: list[list[Any]], numeric_codes: list[tuple[int, int, str, str]],
+                       columns: list[str], issues: IssueCollector) -> None:
+    """编码存成数字时前导零会丢（000123 → 123）。
+
+    如果同一编码列里以文本保存的纯数字编码大多是 L 位、且带前导零，就把数字来源的短编码补齐到 L 位。
+    """
+    if not numeric_codes:
+        return
+    numeric_set = {(r, c) for r, c, _f, _s in numeric_codes}
+    for pos in {c for _r, c, _f, _s in numeric_codes}:
+        lengths: dict[int, int] = {}
+        has_zero = False
+        for r, rec in enumerate(records):
+            v = rec[pos]
+            if (r, pos) in numeric_set or not isinstance(v, str) or not v.isdigit():
+                continue
+            lengths[len(v)] = lengths.get(len(v), 0) + 1
+            has_zero = has_zero or v.startswith("0")
+        if not lengths or not has_zero:
+            continue
+        width = max(lengths, key=lengths.get)
+        fixed: dict[tuple[str, str], int] = {}
+        for r, c, f, sh in numeric_codes:
+            v = records[r][c]
+            if c == pos and isinstance(v, str) and v.isdigit() and len(v) < width:
+                records[r][c] = v.zfill(width)
+                fixed[(f, sh)] = fixed.get((f, sh), 0) + 1
+        for (f, sh), cnt in fixed.items():
+            issues.add(INFO, T_CODE_FIXED,
+                       f"有 {cnt} 个编码存成了数字（前导零丢失），已按 {width} 位补齐，如 123 → {'123'.zfill(width)}",
+                       file=f, sheet=sh, column=columns[pos])
+
+
+NAME_COLUMNS = ("门店", "仓库", "部门", "客户", "供应商")
+
+
+def _check_filename_vs_content(records: list[list[Any]], columns: list[str],
+                               issues: IssueCollector) -> None:
+    """文件名是“北仑三号仓”，内容里“仓库”却全写着“北仑二号仓”（套用模板没改），
+    而文件夹里正好有“北仑二号仓”文件 —— 这种情况很可能把两个仓的数据算到一起，给出警告。"""
+    for col in NAME_COLUMNS:
+        if col not in columns:
+            continue
+        pos = columns.index(col)
+        values_by_file: dict[str, set] = {}
+        for rec in records:
+            if rec[pos] is not None:
+                values_by_file.setdefault(rec[-3], set()).add(rec[pos])
+        stems = {Path(f).stem: f for f in values_by_file}
+        for f, values in values_by_file.items():
+            stem = Path(f).stem
+            if len(values) != 1:
+                continue
+            (value,) = values
+            if str(value) != stem and str(value) in stems:
+                issues.add(WARNING, T_NAME_MISMATCH,
+                           f"文件名是“{stem}”，但“{col}”列全部写的是“{value}”，与文件“{stems[str(value)]}”"
+                           f"相同；按“{col}”汇总时两个文件的数据会合在一起，请核对是否套用模板没改",
+                           file=f, column=col, value=value)
+
+
 def _make_summary(config, detail: pd.DataFrame, aggs: list[tuple[str, str]],
                   issues: IssueCollector) -> pd.DataFrame:
     pivot = (getattr(config, "pivot_column", "") or "").strip()
@@ -278,6 +355,10 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
     col_pos = {c: i for i, c in enumerate(columns)}
     records: list[list[Any]] = []
     files_with_rows: set[str] = set()
+    sum_cols = {a.column for a in config.aggregations
+                if aggregator.normalize_agg_func(a.func) in ("求和", "平均")}
+    global_year = _dominant_year(usable, types) or time.localtime().tm_year
+    numeric_codes: list[tuple[int, int, str, str]] = []   # (记录序号, 列位置, 文件, Sheet)
     for n, (p, targets) in enumerate(usable):
         _check(cancel)
         t = p.table
@@ -289,28 +370,56 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
                        file=t.rel, sheet=t.sheet, row=t.header_row)
         plan = [(i, col_pos[c], types[c], src) for i, (c, src)
                 in enumerate(zip(targets, t.columns)) if c]
+        year = _dominant_year([(p, targets)], types) or global_year
+        no_year: dict[str, int] = {}
+        empty_sum: dict[str, int] = {}
         for excel_row, values in t.rows:
             rec: list[Any] = [None] * len(all_cols)
             for i, pos, ctype, src in plan:
-                value, err = cleaner.clean_value(values[i], ctype)
+                raw = values[i]
+                value, err = cleaner.clean_value(raw, ctype, year)
                 if err:
                     target = columns[pos]
                     label = src if src == target else f"{src}（→{target}）"
                     issues.add(ERROR, T_BAD_DATE if ctype == cleaner.TYPE_DATE else T_BAD_NUMBER,
                                f"{err}，该单元格在明细中留空", file=t.rel, sheet=t.sheet,
-                               row=excel_row, column=label, value=values[i])
+                               row=excel_row, column=label, value=raw)
+                elif ctype == cleaner.TYPE_DATE and value is not None and cleaner.is_month_day(raw):
+                    no_year[src] = no_year.get(src, 0) + 1
+                elif ctype == cleaner.TYPE_CODE and isinstance(raw, (int, float)) \
+                        and not isinstance(raw, bool):
+                    numeric_codes.append((len(records), pos, t.rel, t.sheet))
+                if value is None and not err and columns[pos] in sum_cols:
+                    empty_sum[src] = empty_sum.get(src, 0) + 1
                 rec[pos] = value
             rec[-3], rec[-2], rec[-1] = t.rel, t.sheet, excel_row
             records.append(rec)
+        for src, cnt in no_year.items():
+            issues.add(INFO, T_DATE_NO_YEAR, f"有 {cnt} 个日期没写年份（如 9.30、9月30日），已按 {year} 年处理",
+                       file=t.rel, sheet=t.sheet, row=t.header_row, column=src)
+        for src, cnt in empty_sum.items():
+            issues.add(INFO, T_EMPTY_VALUE, f"有 {cnt} 个空值（未填写，如未盘点），汇总时不按 0 计算",
+                       file=t.rel, sheet=t.sheet, row=t.header_row, column=src)
         if t.rows:
             files_with_rows.add(t.rel)
         result.sheets_read += 1
+    _pad_numeric_codes(records, numeric_codes, columns, issues)
+    _check_filename_vs_content(records, columns, issues)
 
     detail = aggregator.build_detail(records, all_cols)
     progress(82, "检查重复记录")
     detail = aggregator.deduplicate(detail, config.dedup_mode, config.dedup_columns, issues)
     progress(86, "分组汇总")
     aggs = [(a.column, a.func) for a in config.aggregations]
+    # 常见设置错误的提醒
+    for col, func in aggs:
+        if col in detail.columns and len(detail) and detail[col].isna().all():
+            issues.add(WARNING, T_AGG, f"汇总列“{col}”在所有数据中都是空的，汇总结果为 0 或空；"
+                       "请检查是否选错了汇总列（例如盘点表通常汇总“账面数量”“实盘数量”）", column=col)
+    for col in config.group_by:
+        if types.get(col) == cleaner.TYPE_NUMBER:
+            issues.add(WARNING, T_AGG, f"分组列“{col}”是数值列，按它分组通常没有意义；"
+                       "数值列一般放在“汇总列”里求和", column=col)
     summary = _make_summary(config, detail, aggs, issues)
     result.detail, result.summary = detail, summary
 

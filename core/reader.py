@@ -364,6 +364,10 @@ def build_table(grid: list[list[Any]], header_idx: int, rel: str, sheet: str,
             seen[name] = 1
         names.append(name)
 
+    from .header_mapper import normalize_header
+    header_norm = {normalize_header(_cell_text(v)): i for i, v in enumerate(header) if _cell_text(v)}
+    col_map: list[int | None] | None = None      # 遇到第二张表时：新位置 → 原表头位置
+
     data_rows: list[tuple[int, list[Any]]] = []
     for idx in range(header_idx + 1, len(grid)):
         row = list(grid[idx]) + [None] * (width - len(grid[idx]))
@@ -371,6 +375,23 @@ def build_table(grid: list[list[Any]], header_idx: int, rel: str, sheet: str,
         non_empty = [v for v in row if _cell_text(v)]
         if not non_empty:
             continue
+        # 再次出现表头（同一 Sheet 里上下两张表）：跳过该行，之后按新表头的列顺序对应
+        hits = [normalize_header(_cell_text(v)) in header_norm for v in row if _cell_text(v)]
+        if sum(hits) >= 2 and sum(hits) >= 0.6 * len(hits):
+            col_map = [header_norm.get(normalize_header(_cell_text(v))) if _cell_text(v) else None
+                       for v in row]
+            extra = [_cell_text(v) for v, m in zip(row, col_map) if _cell_text(v) and m is None]
+            issues.add(INFO, T_HEADER,
+                       "再次出现表头（同一 Sheet 中的另一张表），已跳过该行，下方数据按此表头对应列"
+                       + (f"；第一张表没有的列已忽略：{'、'.join(extra)}" if extra else ""),
+                       file=rel, sheet=sheet, row=excel_row)
+            continue
+        if col_map is not None:
+            remapped: list[Any] = [None] * width
+            for v, m in zip(row, col_map):
+                if m is not None:
+                    remapped[m] = v
+            row = remapped
         if _is_total_row(row):
             issues.add(INFO, T_SKIP_TOTAL, "识别为合计行，已跳过（不计入明细）",
                        file=rel, sheet=sheet, row=excel_row, value=_cell_text(non_empty[0]))

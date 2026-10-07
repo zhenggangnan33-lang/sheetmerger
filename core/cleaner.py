@@ -14,6 +14,7 @@ from typing import Any
 TYPE_TEXT = "text"
 TYPE_NUMBER = "number"
 TYPE_DATE = "date"
+TYPE_CODE = "code"   # 编码：全角转半角、去空格、字母大写，数字不丢前导零以外的信息
 TYPE_AUTO = "auto"   # 未指定类型：只做占位值和空白处理，保留原始类型
 
 # 统一视为空值的占位写法（比较前会做全角转半角、去空格、转小写）
@@ -32,6 +33,24 @@ _DATE_YMD = re.compile(
     r"(?:[ tT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.\d+)?)?)?$")
 _DATE_COMPACT = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
 _SERIAL = re.compile(r"^\d+(\.\d+)?$")
+# 没写年份的日期：9.30 / 9/30 / 9-30 / 9月30日 / 9月30号
+_DATE_MD = re.compile(r"^(\d{1,2})\s*(?:[./-]|月)\s*(\d{1,2})\s*[日号]?$")
+_MIN_DATE_SERIAL = 367               # 小于这个数（1901 年以前）不当作 Excel 日期序列号
+# Excel 里为保住前导零常用的 ="000123" 写法
+_EXCEL_TEXT_WRAPPER = re.compile(r'^\s*=\s*"(.*)"\s*$', re.S)
+# 数字后面跟的计量单位（如 12箱、8 瓶、3.5kg）；万、亿等倍数单位不自动换算
+_NUM_WITH_UNIT = re.compile(r"^([-+]?\d+(?:\.\d+)?)\s*([a-zA-Z\u4e00-\u9fff]{1,4})$")
+_MULTIPLIER_UNITS = set("万亿千百")
+ERR_NO_YEAR = "日期没有写年份"
+
+
+def unwrap_excel_text(value: Any) -> Any:
+    """去掉 ="000123" 外壳，得到 000123。"""
+    if isinstance(value, str):
+        m = _EXCEL_TEXT_WRAPPER.match(value)
+        if m:
+            return m.group(1)
+    return value
 
 
 def _norm_str(s: str) -> str:
@@ -50,6 +69,7 @@ def is_placeholder(value: Any) -> bool:
 
 # ---------------------------------------------------------------- 数值
 def to_number(value: Any) -> tuple[float | int | None, str | None]:
+    value = unwrap_excel_text(value)
     if is_placeholder(value):
         return None, None
     if isinstance(value, bool):
@@ -75,7 +95,10 @@ def to_number(value: Any) -> tuple[float | int | None, str | None]:
     try:
         num = float(s)
     except ValueError:
-        return None, "无法转换为数值"
+        m = _NUM_WITH_UNIT.match(s)
+        if not m or _MULTIPLIER_UNITS & set(m.group(2)):
+            return None, "无法转换为数值"
+        num = float(m.group(1))                  # 12箱 → 12：去掉计量单位
     if math.isnan(num) or math.isinf(num):
         return None, "无法转换为数值"
     if percent:
@@ -103,8 +126,18 @@ def _from_ymd(y: int, m: int, d: int, hh: int = 0, mm: int = 0, ss: int = 0):
     return value.date() if (hh, mm, ss) == (0, 0, 0) else value
 
 
-def to_date(value: Any) -> tuple[dt.date | dt.datetime | None, str | None]:
-    """兼容 2026-10-02、2026/10/2、20261002、2026年10月2日、Excel 序列号。"""
+def is_month_day(value: Any) -> bool:
+    """是否为没写年份的日期写法（9.30、9月30日 等）。"""
+    return isinstance(value, str) and bool(_DATE_MD.match(_norm_str(unwrap_excel_text(value))))
+
+
+def to_date(value: Any, default_year: int | None = None
+            ) -> tuple[dt.date | dt.datetime | None, str | None]:
+    """兼容 2026-10-02、2026/10/2、20261002、2026年10月2日、Excel 序列号。
+
+    没写年份的写法（9.30、9/30、9月30日）用 default_year 补全；没有 default_year 时报错。
+    """
+    value = unwrap_excel_text(value)
     if is_placeholder(value):
         return None, None
     if isinstance(value, dt.datetime):
@@ -120,6 +153,8 @@ def to_date(value: Any) -> tuple[dt.date | dt.datetime | None, str | None]:
             if parsed is not None:
                 return parsed, None
             return None, "8 位数字不是有效的 年月日"
+        if value < _MIN_DATE_SERIAL:
+            return None, "数字太小，不像日期（如果想写“月.日”，请写上年份）"
         parsed = _from_serial(float(value))
         return (parsed, None) if parsed is not None else (None, "数字超出 Excel 日期序列号范围")
     if isinstance(value, dt.timedelta):
@@ -138,7 +173,15 @@ def to_date(value: Any) -> tuple[dt.date | dt.datetime | None, str | None]:
     if m:
         parsed = _from_ymd(int(m[1]), int(m[2]), int(m[3]))
         return (parsed, None) if parsed is not None else (None, "8 位数字不是有效的 年月日")
+    m = _DATE_MD.match(s)
+    if m:
+        if default_year is None:
+            return None, ERR_NO_YEAR
+        parsed = _from_ymd(default_year, int(m[1]), int(m[2]))
+        return (parsed, None) if parsed is not None else (None, "月日数值无效")
     if _SERIAL.match(s):
+        if float(s) < _MIN_DATE_SERIAL:
+            return None, "数字太小，不像日期"
         parsed = _from_serial(float(s))
         return (parsed, None) if parsed is not None else (None, "数字超出 Excel 日期序列号范围")
     return None, "无法识别的日期格式"
@@ -147,6 +190,7 @@ def to_date(value: Any) -> tuple[dt.date | dt.datetime | None, str | None]:
 # ---------------------------------------------------------------- 文本
 def to_text(value: Any) -> tuple[str | None, str | None]:
     """文本列：统一转为字符串，整数型浮点去掉 .0，占位值转空。"""
+    value = unwrap_excel_text(value)
     if is_placeholder(value):
         return None, None
     if isinstance(value, float):
@@ -158,8 +202,22 @@ def to_text(value: Any) -> tuple[str | None, str | None]:
     return str(value).strip(), None
 
 
+def to_code(value: Any) -> tuple[str | None, str | None]:
+    """编码列：BX－003、 bx-003 、="BX-003" 都统一成 BX-003；数字 123.0 → "123"。"""
+    value = unwrap_excel_text(value)
+    if is_placeholder(value):
+        return None, None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, (dt.date, dt.datetime)):
+        return None, "单元格是日期，不是编码"
+    s = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value))).upper()
+    return (s or None), None
+
+
 def to_auto(value: Any) -> tuple[Any, str | None]:
     """未指定类型的列：只处理占位值和首尾空白。"""
+    value = unwrap_excel_text(value)
     if is_placeholder(value):
         return None, None
     if isinstance(value, str):
@@ -173,9 +231,12 @@ CONVERTERS = {
     TYPE_NUMBER: to_number,
     TYPE_DATE: to_date,
     TYPE_TEXT: to_text,
+    TYPE_CODE: to_code,
     TYPE_AUTO: to_auto,
 }
 
 
-def clean_value(value: Any, col_type: str) -> tuple[Any, str | None]:
+def clean_value(value: Any, col_type: str, default_year: int | None = None) -> tuple[Any, str | None]:
+    if col_type == TYPE_DATE:
+        return to_date(value, default_year)
     return CONVERTERS.get(col_type, to_auto)(value)

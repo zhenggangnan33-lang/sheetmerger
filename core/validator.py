@@ -30,6 +30,10 @@ T_BAD_DATE = "日期无法识别"
 T_DUPLICATE = "重复记录"
 T_DUPLICATE_DROPPED = "重复记录已删除"
 T_AGG = "汇总设置"
+T_EMPTY_VALUE = "空值"
+T_CODE_FIXED = "编码已补齐"
+T_DATE_NO_YEAR = "日期补全年份"
+T_NAME_MISMATCH = "文件名与内容不一致"
 
 ISSUE_COLUMNS = ["严重程度", "文件", "Sheet", "行号", "列名", "问题类型", "原始值", "说明"]
 

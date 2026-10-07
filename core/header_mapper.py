@@ -27,7 +27,8 @@ STATUS_IGNORED = "忽略"
 TYPE_TEXT = "text"
 TYPE_NUMBER = "number"
 TYPE_DATE = "date"
-COLUMN_TYPES = (TYPE_TEXT, TYPE_NUMBER, TYPE_DATE)
+TYPE_CODE = "code"
+COLUMN_TYPES = (TYPE_TEXT, TYPE_NUMBER, TYPE_DATE, TYPE_CODE)
 
 DEFAULT_ALIAS_PATH = Path(__file__).with_name("aliases_default.json")
 

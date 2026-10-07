@@ -7,3 +7,4 @@ build/
 dist/
 *.spec.bak
 .venv-build/
+tests/inventory_data/
