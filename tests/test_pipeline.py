@@ -182,3 +182,70 @@ def test_cli_count_column(data_dir, tmp_path):
     assert cli.main(["-i", str(data_dir), "-g", "门店", "-s", "金额", "--count-column",
                      "-o", str(out)]) == 0
     assert [c.value for c in openpyxl.load_workbook(out)["汇总"][1]] == ["门店", "金额(求和)", "记录数"]
+
+
+def test_split_into_sheets(cfg):
+    cfg.group_by, cfg.pivot_column, cfg.split_by = ["商品"], "门店", "门店"
+    result = pipeline.run(cfg)
+    wb = openpyxl.load_workbook(result.output_path)
+    assert wb.sheetnames == ["汇总", "一店", "二店", "三店", "四店", "明细", "问题清单"]
+    assert [c.value for c in wb["汇总"][1]] == ["商品", "一店", "二店", "三店", "四店", "合计"]
+    ws = wb["二店"]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    detail_amount = sum(v for v in result.detail[result.detail["门店"] == "二店"]["金额"] if v)
+    assert rows[-1][1] == "小计" and rows[-1][5] == pytest.approx(detail_amount)
+    assert all(r[1] == "二店" for r in rows[:-1])
+    assert result.split_count == 4 and result.split_dir is None
+
+
+def test_split_into_files(cfg):
+    cfg.group_by, cfg.split_by, cfg.split_mode = ["商品"], "门店", "file"
+    cfg.pivot_column = "门店"
+    result = pipeline.run(cfg)
+    folder = result.split_dir
+    assert folder == result.output_path.parent / "out_按门店拆分"
+    assert sorted(p.name for p in folder.iterdir()) == sorted(
+        ["一店.xlsx", "二店.xlsx", "三店.xlsx", "四店.xlsx"])
+    wb = openpyxl.load_workbook(folder / "三店.xlsx")
+    assert wb.sheetnames == ["汇总", "明细"]
+    # 展开列与拆分列相同：单店文件用普通汇总，不重复出“三店/合计”两列
+    assert [c.value for c in wb["汇总"][1]] == ["商品", "金额(求和)"]
+    assert {r[1] for r in wb["明细"].iter_rows(min_row=2, values_only=True)} == {"三店"}
+    assert openpyxl.load_workbook(result.output_path).sheetnames == ["汇总", "明细", "问题清单"]
+
+
+def test_split_missing_column_and_sheet_limit(cfg, monkeypatch):
+    cfg.split_by = "不存在"
+    result = pipeline.run(cfg, export=False)
+    assert any("拆分列“不存在”" in i.message for i in result.issues.issues)
+    monkeypatch.setattr(pipeline, "SPLIT_SHEET_LIMIT", 2)
+    cfg.split_by = "门店"
+    result = pipeline.run(cfg)
+    assert any("超过 2 个" in i.message for i in result.issues.issues)
+    assert openpyxl.load_workbook(result.output_path).sheetnames == ["汇总", "明细", "问题清单"]
+
+
+def test_safe_names():
+    from core.exporter import safe_sheet_title
+    used = {"汇总"}
+    assert safe_sheet_title("汇总", used) == "汇总_2"
+    assert safe_sheet_title("a/b:c*?[x]", used) == "a_b_c___x_"
+    assert len(safe_sheet_title("长" * 40, used)) == 31
+    names = set()
+    assert pipeline.safe_filename('CON', names) == "_CON"
+    assert pipeline.safe_filename('a<b>:"|?.', names) == "a_b_____"
+    assert pipeline.safe_filename('a<b>:"|?.', names) == "a_b______2"
+
+
+def test_pivot_split_config_roundtrip(cfg, tmp_path):
+    cfg.pivot_column, cfg.split_by, cfg.split_mode = "门店", "门店", "file"
+    assert TaskConfig.load(cfg.save(tmp_path / "c.json")) == cfg
+    assert TaskConfig.from_dict({"input_folder": "x"}).split_mode == "sheet"
+
+
+def test_cli_pivot_split(data_dir, tmp_path, capsys):
+    out = tmp_path / "r.xlsx"
+    assert cli.main(["-i", str(data_dir), "-g", "商品", "-s", "金额", "--pivot", "门店",
+                     "--split", "门店", "--split-mode", "file", "-o", str(out)]) == 0
+    assert "拆分文件" in capsys.readouterr().out
+    assert (tmp_path / "r_按门店拆分" / "一店.xlsx").exists()

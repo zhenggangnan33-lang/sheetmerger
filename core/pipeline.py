@@ -4,6 +4,7 @@ CLI 和 GUI 共用本模块，保证两边结果一致。
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -16,8 +17,8 @@ from . import aggregator, cleaner, exporter, reader
 from .header_mapper import (STATUS_AUTO, STATUS_IGNORED, STATUS_MANUAL, STATUS_PENDING,
                             STATUS_UNMATCHED, AliasStore, MappingSuggestion,
                             suggest_for_columns)
-from .validator import (ERROR, INFO, WARNING, IssueCollector, T_BAD_DATE, T_BAD_NUMBER,
-                        T_MAP_CONFLICT, T_MAP_PENDING, T_MAP_UNMATCHED, T_MISSING_COLUMN,
+from .validator import (ERROR, INFO, WARNING, IssueCollector, T_AGG, T_BAD_DATE,
+                        T_BAD_NUMBER, T_MAP_CONFLICT, T_MAP_PENDING, T_MAP_UNMATCHED, T_MISSING_COLUMN,
                         T_NO_STD_COLUMN, T_READ_FAIL)
 
 OUTPUT_PREFIX = "汇总结果_"     # 本工具生成的结果文件，扫描时跳过，避免重复汇总
@@ -57,6 +58,26 @@ class TablePlan:
                    if s.target and s.status in (STATUS_AUTO, STATUS_MANUAL, STATUS_PENDING))
 
 
+SPLIT_SHEET_LIMIT = 200        # 拆分成 Sheet 的上限，超过时提示改用“每个值一个文件”
+SPLIT_SHEET, SPLIT_FILE = "sheet", "file"
+_BAD_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                   *(f"LPT{i}" for i in range(1, 10))}
+
+
+def safe_filename(name: str, used: set[str]) -> str:
+    """Windows 文件名：去掉非法字符、避开保留名、不重名（不区分大小写）。"""
+    base = _BAD_FILENAME.sub("_", name).strip().rstrip(".")[:100] or "未命名"
+    if base.upper() in _RESERVED_NAMES:
+        base = f"_{base}"
+    title, n = base, 2
+    while title.lower() in used:
+        title = f"{base}_{n}"
+        n += 1
+    used.add(title.lower())
+    return title
+
+
 @dataclass
 class RunResult:
     output_path: Path | None
@@ -68,6 +89,8 @@ class RunResult:
     detail: pd.DataFrame | None = None
     issues: IssueCollector = field(default_factory=IssueCollector)
     elapsed: float = 0.0
+    split_dir: Path | None = None          # 按列拆分成文件时的文件夹
+    split_count: int = 0                   # 拆分出的 Sheet / 文件数
 
     @property
     def issue_counts(self) -> dict[str, int]:
@@ -188,6 +211,40 @@ def select_usable(config, store: AliasStore, plans: list[TablePlan],
     return usable, columns
 
 
+def _make_summary(config, detail: pd.DataFrame, aggs: list[tuple[str, str]],
+                  issues: IssueCollector) -> pd.DataFrame:
+    pivot = (getattr(config, "pivot_column", "") or "").strip()
+    if pivot:
+        return aggregator.pivot_summarize(detail, config.group_by, pivot, aggs, issues)
+    return aggregator.summarize(detail, config.group_by, aggs, issues,
+                                add_count=config.add_count_column)
+
+
+def _export_split_files(config, out: Path, detail: pd.DataFrame, split_col: str, parts: list,
+                        aggs: list[tuple[str, str]], result: RunResult, progress: ProgressFn,
+                        cancel: threading.Event | None) -> None:
+    """每个值一个文件：写到“结果文件名_按X拆分”文件夹，每个文件含该值的汇总和明细。"""
+    folder = out.with_name(f"{out.stem}_按{safe_filename(split_col, set())}拆分")
+    folder.mkdir(parents=True, exist_ok=True)
+    used: set[str] = set()
+    for n, (value, positions) in enumerate(parts):
+        _check(cancel)
+        progress(92 + 7 * n // max(len(parts), 1), f"拆分输出 {aggregator.value_label(value)}")
+        part = detail.iloc[positions].reset_index(drop=True)
+        if (getattr(config, "pivot_column", "") or "").strip() == split_col:
+            # 展开列就是拆分列时，单个文件里只有一个值，展开没有意义，改用普通汇总
+            part_summary = aggregator.summarize(part, [g for g in config.group_by if g != split_col]
+                                                or [split_col], aggs, IssueCollector(),
+                                                add_count=config.add_count_column)
+        else:
+            part_summary = _make_summary(config, part, aggs, IssueCollector())
+        name = safe_filename(aggregator.value_label(value), used) + ".xlsx"
+        exporter.export_result(folder / name, part_summary, part, None,
+                               plain_columns=[aggregator.COL_ROW])
+    result.split_dir = folder
+    result.split_count = len(parts)
+
+
 def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
         cancel: threading.Event | None = None, export: bool = True) -> RunResult:
     """执行完整任务。除取消外不会抛出异常，所有问题记入 result.issues。"""
@@ -253,10 +310,23 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
     progress(82, "检查重复记录")
     detail = aggregator.deduplicate(detail, config.dedup_mode, config.dedup_columns, issues)
     progress(86, "分组汇总")
-    summary = aggregator.summarize(detail, config.group_by,
-                                   [(a.column, a.func) for a in config.aggregations], issues,
-                                   add_count=config.add_count_column)
+    aggs = [(a.column, a.func) for a in config.aggregations]
+    summary = _make_summary(config, detail, aggs, issues)
     result.detail, result.summary = detail, summary
+
+    # 按列拆分
+    split_col = (config.split_by or "").strip()
+    parts: list[tuple] = []
+    if split_col:
+        if split_col not in detail.columns:
+            issues.add(ERROR, T_AGG, f"拆分列“{split_col}”在明细中不存在，未拆分", column=split_col)
+        else:
+            parts = aggregator.split_positions(detail, split_col)
+            if config.split_mode != SPLIT_FILE and len(parts) > SPLIT_SHEET_LIMIT:
+                issues.add(WARNING, T_AGG,
+                           f"按“{split_col}”有 {len(parts)} 个不同的值，超过 {SPLIT_SHEET_LIMIT} 个，"
+                           "未拆分成 Sheet；请改用“每个值一个文件”", column=split_col)
+                parts = []
     result.rows_detail = len(detail)
     result.files_ok = len(files_with_rows)
 
@@ -264,10 +334,21 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
         _check(cancel)
         progress(90, "写出结果文件")
         out = config.resolve_output_path()
+        extra = []
+        if parts and config.split_mode != SPLIT_FILE:
+            for value, positions in parts:
+                part = detail.iloc[positions]
+                rows = [list(r) for r in part.itertuples(index=False, name=None)]
+                rows.append(aggregator.subtotal_row(part, split_col, aggs))
+                extra.append((aggregator.value_label(value), list(detail.columns), rows))
+            result.split_count = len(extra)
         try:
             exporter.export_result(out, summary, detail, issues.sorted(),
-                                   plain_columns=[aggregator.COL_ROW])
+                                   plain_columns=[aggregator.COL_ROW], extra_sheets=extra)
             result.output_path = out
+            if parts and config.split_mode == SPLIT_FILE:
+                _export_split_files(config, out, detail, split_col, parts, aggs, result,
+                                    progress, cancel)
         except PermissionError:
             issues.add(ERROR, T_READ_FAIL, f"无法写入结果文件，可能正被 Excel/WPS 打开：{out}")
         except OSError as e:

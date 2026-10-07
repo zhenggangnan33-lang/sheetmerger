@@ -19,7 +19,7 @@ from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
                                QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QProgressBar,
+                               QMainWindow, QMessageBox, QProgressBar, QScrollArea,
                                QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -443,7 +443,7 @@ class SettingsPage(QWidget):
 
         self.group_list = QListWidget()
         self.group_list.setDragDropMode(QAbstractItemView.InternalMove)
-        self.group_list.setMinimumHeight(170)
+        self.group_list.setMinimumHeight(110)
         group_box = QGroupBox("分组列（可多选，可拖动调整顺序）")
         self.group_input = QComboBox()
         self.group_input.setEditable(True)
@@ -497,12 +497,13 @@ class SettingsPage(QWidget):
         self.out_name = QLineEdit()
         self.out_name.setPlaceholderText("留空 = 汇总结果_年月日_时分秒.xlsx")
         out_box = QGroupBox("输出")
-        ol = QFormLayout(out_box)
-        d_row = QHBoxLayout()
-        d_row.addWidget(self.out_dir, 1)
-        d_row.addWidget(out_browse)
-        ol.addRow("保存到：", d_row)
-        ol.addRow("文件名：", self.out_name)
+        ol = QHBoxLayout(out_box)          # 一行显示，节省高度
+        ol.addWidget(QLabel("保存到："))
+        ol.addWidget(self.out_dir, 3)
+        ol.addWidget(out_browse)
+        ol.addSpacing(12)
+        ol.addWidget(QLabel("文件名："))
+        ol.addWidget(self.out_name, 2)
 
         top = QHBoxLayout()
         top.setSpacing(12)
@@ -512,7 +513,33 @@ class SettingsPage(QWidget):
         lay.setContentsMargins(18, 8, 18, 12)
         lay.setSpacing(8)
         lay.addLayout(top, 1)
-        lay.addWidget(dedup_box)
+        # 交叉表与拆分
+        self.pivot_combo = QComboBox()
+        self.split_combo = QComboBox()
+        self.split_mode_combo = QComboBox()
+        self.split_mode_combo.addItem("每个值一个 Sheet（在同一个结果文件里）", "sheet")
+        self.split_mode_combo.addItem("每个值一个文件（单独的文件夹）", "file")
+        self.split_combo.currentIndexChanged.connect(
+            lambda _i: self.split_mode_combo.setEnabled(bool(self.split_combo.currentData())))
+        layout_box = QGroupBox("交叉表与拆分")
+        ll = QFormLayout(layout_box)
+        ll.addRow("展开成列：", self.pivot_combo)
+        ll.addRow("拆分输出：", self.split_combo)
+        ll.addRow("拆分方式：", self.split_mode_combo)
+        # 注意：这里不能用自动换行的标签，否则滚动区域会按“理想高度”排版、出现多余的滚动条
+        hint = QLabel("例：分组“商品”+ 展开“门店” = 商品×门店交叉表")
+        hint.setObjectName("hint")
+        hint.setToolTip("拆分输出选“门店”时，每个门店单独一份明细和小计（Sheet 或文件）")
+        ll.addRow(hint)
+        self._fill_column_choice(self.pivot_combo, [], "", "（不展开）")
+        self._fill_column_choice(self.split_combo, [], "", "（不拆分）")
+        self.split_mode_combo.setEnabled(False)
+
+        mid = QHBoxLayout()
+        mid.setSpacing(12)
+        mid.addWidget(dedup_box, 1)
+        mid.addWidget(layout_box, 1)
+        lay.addLayout(mid)
         lay.addWidget(out_box)
 
     def _browse_out(self) -> None:
@@ -580,6 +607,21 @@ class SettingsPage(QWidget):
         self.group_input.setEditText("")
         return item
 
+    @staticmethod
+    def _fill_column_choice(combo: QComboBox, columns: list[str], current: str,
+                            none_label: str) -> None:
+        """单选列下拉框：第一项为“不使用”，配置里有、当前数据里没有的列也保留。"""
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(none_label, "")
+        for c in columns:
+            combo.addItem(c, c)
+        if current and current not in columns:
+            combo.addItem(f"{current}（当前数据中没有）", current)
+        idx = combo.findData(current or "")
+        combo.setCurrentIndex(max(idx, 0))
+        combo.blockSignals(False)
+
     def missing_group_columns(self) -> list[str]:
         """已勾选、但当前数据中不存在的分组列。"""
         return [c for c in self._checked(self.group_list) if self.columns and c not in self.columns]
@@ -600,6 +642,10 @@ class SettingsPage(QWidget):
         for a in aggs:
             self.add_agg(a.column, a.func)
         self.count_box.setChecked(cfg.add_count_column)
+        self._fill_column_choice(self.pivot_combo, columns, cfg.pivot_column, "（不展开）")
+        self._fill_column_choice(self.split_combo, columns, cfg.split_by, "（不拆分）")
+        self.split_mode_combo.setCurrentIndex(max(self.split_mode_combo.findData(cfg.split_mode), 0))
+        self.split_mode_combo.setEnabled(bool(cfg.split_by))
         idx = max(0, self.dedup_combo.findData(cfg.dedup_mode))
         self.dedup_combo.setCurrentIndex(idx)
         self._fill_checklist(self.dedup_list, columns, cfg.dedup_columns)
@@ -618,6 +664,9 @@ class SettingsPage(QWidget):
                 aggs.append(AggSpec(col, func))
         cfg.aggregations = aggs
         cfg.add_count_column = self.count_box.isChecked()
+        cfg.pivot_column = self.pivot_combo.currentData() or ""
+        cfg.split_by = self.split_combo.currentData() or ""
+        cfg.split_mode = self.split_mode_combo.currentData() or "sheet"
         cfg.dedup_mode = self.dedup_combo.currentData()
         cfg.dedup_columns = self._checked(self.dedup_list)
         cfg.output_dir = self.out_dir.text().strip()
@@ -714,6 +763,12 @@ class RunPage(QWidget):
             ("分组列", "、".join(cfg.group_by) or "（不分组，只出总计）"),
             ("汇总列", aggs + ("，附加记录数" if cfg.add_count_column else "")),
             ("重复记录", dedup + (f"（按 {'、'.join(cfg.dedup_columns)}）" if cfg.dedup_columns else "")),
+            ("交叉表与拆分",
+             "、".join(filter(None, [
+                 f"按“{cfg.pivot_column}”展开成列" if cfg.pivot_column else "",
+                 (f"按“{cfg.split_by}”拆分为每个值一个"
+                  + ("文件" if cfg.split_mode == "file" else " Sheet")) if cfg.split_by else "",
+             ])) or "无"),
             ("手动设置", f"排除 {len(cfg.excluded)} 项 · 表头行 {len(cfg.header_rows)} 项 · "
                          f"映射 {len(cfg.column_mapping)} 项"),
             ("输出文件", f"{cfg.output_dir or cfg.input_folder}/"
@@ -760,6 +815,10 @@ class RunPage(QWidget):
         theme.stagger_in(self.tiles, each=0.08, dy=12)
         if result.output_path:
             text += f"\n结果文件：{result.output_path}"
+            if result.split_dir:
+                text += f"\n拆分文件：{result.split_dir}（{result.split_count} 个）"
+            elif result.split_count:
+                text += f"（含 {result.split_count} 个拆分 Sheet）"
             self.status.setText("✓ 完成")
         else:
             self.status.setText("未能生成结果文件，请查看下方问题清单")
@@ -812,7 +871,14 @@ class MainWindow(QMainWindow):
         self.page_settings = SettingsPage()
         self.page_run = RunPage()
         self.stack = QStackedWidget()
-        for p in (self.page_folder, self.page_mapping, self.page_settings, self.page_run):
+        # 汇总设置页控件较多，窗口较小时改为滚动显示，避免控件互相挤压
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.NoFrame)
+        settings_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        settings_scroll.viewport().setAutoFillBackground(False)
+        settings_scroll.setWidget(self.page_settings)
+        for p in (self.page_folder, self.page_mapping, settings_scroll, self.page_run):
             self.stack.addWidget(p)
 
         self.act_load = QAction("加载配置", self)

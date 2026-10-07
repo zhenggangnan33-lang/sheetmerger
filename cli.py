@@ -37,6 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agg", "-a", action="append",
                    help="汇总列:方式，方式为 求和/计数/平均/最大/最小，例如 金额:平均")
     p.add_argument("--count-column", action="store_true", help="汇总表附加“记录数”列")
+    p.add_argument("--pivot", help="交叉表：把这一列的每个值展开成汇总表的一列，如 --pivot 门店")
+    p.add_argument("--split", help="按这一列拆分输出，如 --split 门店")
+    p.add_argument("--split-mode", choices=["sheet", "file"],
+                   help="拆分方式：sheet 每个值一个 Sheet（默认）/ file 每个值一个文件")
     p.add_argument("--dedup", choices=aggregator.DEDUP_MODES,
                    help="重复记录处理：off 不检查 / mark 只标记(默认) / drop 删除")
     p.add_argument("--dedup-cols", action="append", help="按哪些列判断重复，默认全部列")
@@ -74,6 +78,12 @@ def config_from_args(args: argparse.Namespace) -> TaskConfig:
         cfg.aggregations = aggs
     if args.count_column:
         cfg.add_count_column = True
+    if args.pivot is not None:
+        cfg.pivot_column = args.pivot.strip()
+    if args.split is not None:
+        cfg.split_by = args.split.strip()
+    if args.split_mode:
+        cfg.split_mode = args.split_mode
     if args.dedup:
         cfg.dedup_mode = args.dedup
     if args.dedup_cols:
@@ -157,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"问题：错误 {c[ERROR]}，警告 {c[WARNING]}，提示 {c[INFO]}")
     if result.output_path:
         print(f"结果文件：{result.output_path}")
+        if result.split_dir:
+            print(f"拆分文件：{result.split_dir}（{result.split_count} 个）")
+        elif result.split_count:
+            print(f"已按“{cfg.split_by}”拆分为 {result.split_count} 个 Sheet")
         return 0
     for i in result.issues.sorted()[:5]:
         print(f"{i.severity} {i.message}", file=sys.stderr)

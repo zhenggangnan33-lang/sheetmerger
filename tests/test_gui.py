@@ -210,3 +210,24 @@ def test_loaded_group_columns_not_grey_before_scan(win, data_dir):
     assert [i.text() for i in items] == ["部门", "项目"]
     assert all(not i.toolTip() for i in items)        # 未扫描前不显示“不存在”
     assert win.config.group_by == ["部门", "项目"]
+
+
+def test_pivot_and_split_settings(win, data_dir, tmp_path):
+    win.page_folder.folder_edit.setText(str(data_dir))
+    win.start_scan()
+    win.go_next()
+    win.go_next()
+    page = win.page_settings
+    assert page.pivot_combo.currentData() == "" and not page.split_mode_combo.isEnabled()
+    page.pivot_combo.setCurrentIndex(page.pivot_combo.findData("门店"))
+    page.split_combo.setCurrentIndex(page.split_combo.findData("门店"))
+    assert page.split_mode_combo.isEnabled()
+    page.split_mode_combo.setCurrentIndex(page.split_mode_combo.findData("file"))
+    page.out_dir.setText(str(tmp_path))
+    page.out_name.setText("p.xlsx")
+    win.go_next()
+    assert (win.config.pivot_column, win.config.split_by, win.config.split_mode) == ("门店", "门店", "file")
+    assert any("按“门店”拆分为每个值一个文件" in line for line in win.page_run.overview_lines)
+    win.start_run()
+    assert win.last_result.split_dir == tmp_path / "p_按门店拆分"
+    assert "拆分文件" in win.page_run.stats.text()

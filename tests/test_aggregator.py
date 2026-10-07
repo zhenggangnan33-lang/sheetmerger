@@ -1,3 +1,4 @@
+import pytest
 import datetime as dt
 
 from core import aggregator as ag
@@ -79,3 +80,64 @@ def test_count_column_optional():
     assert list(s.columns) == ["门店", "金额(求和)", "记录数"]
     s = ag.summarize(_df(), ["门店"], [], issues)               # 没有汇总列时仍保留记录数
     assert list(s.columns) == ["门店", "记录数"]
+
+
+# ---------------------------------------------------------------- 交叉表与拆分
+def _sales():
+    rows = [
+        ["一店", "苹果", 10, 1, "a", "S", 2],
+        ["二店", "苹果", 20, 3, "a", "S", 3],
+        ["一店", "香蕉", 5, 5, "a", "S", 4],
+        ["十二店", "苹果", 7, 2, "a", "S", 5],
+        ["二店", "苹果", 30, 5, "a", "S", 6],
+    ]
+    return ag.build_detail(rows, ["门店", "商品", "金额", "数量"] + ag.SOURCE_COLUMNS)
+
+
+def test_natural_sort_order():
+    names = ["十二店", "二店", "10号店", "一店", "2号店", "三店", "十店"]
+    assert sorted(names, key=ag._sort_key) == ["一店", "2号店", "二店", "三店", "10号店", "十店", "十二店"]
+    assert sorted([None, "b", 3], key=ag._sort_key) == [3, "b", None]
+
+
+def test_pivot_single_agg():
+    issues = IssueCollector()
+    p = ag.pivot_summarize(_sales(), ["商品"], "门店", [("金额", "求和")], issues)
+    assert list(p.columns) == ["商品", "一店", "二店", "十二店", "合计"]
+    rows = {r[0]: r[1:] for r in p.itertuples(index=False, name=None)}
+    assert rows["苹果"] == (10, 50, 7, 67)
+    assert rows["香蕉"] == (5, None, None, 5)            # 没有数据的格子留空
+    assert rows["总计"] == (15, 50, 7, 72)
+    assert not issues.issues
+
+
+def test_pivot_multi_agg_totals_recomputed():
+    issues = IssueCollector()
+    p = ag.pivot_summarize(_sales(), ["商品"], "门店", [("金额", "求和"), ("数量", "平均")], issues)
+    assert list(p.columns)[:3] == ["商品", "一店·金额(求和)", "一店·数量(平均)"]
+    assert list(p.columns)[-2:] == ["合计·金额(求和)", "合计·数量(平均)"]
+    total = p.iloc[-1].tolist()
+    assert total[0] == "总计" and total[-2] == 72
+    assert total[-1] == pytest.approx(16 / 5)          # 平均按明细重新计算，不是各列平均再平均
+
+
+def test_pivot_no_group_and_count_fallback():
+    issues = IssueCollector()
+    p = ag.pivot_summarize(_sales(), [], "门店", [], issues)
+    assert list(p.columns) == ["项目", "一店", "二店", "十二店", "合计"]
+    assert p.iloc[0].tolist() == ["总计", 2, 2, 1, 5]
+
+
+def test_pivot_missing_column_falls_back():
+    issues = IssueCollector()
+    p = ag.pivot_summarize(_sales(), ["商品"], "不存在", [("金额", "求和")], issues)
+    assert list(p.columns) == ["商品", "金额(求和)"] and issues.count(ERROR) == 1
+
+
+def test_split_positions_and_subtotal():
+    df = _sales()
+    parts = ag.split_positions(df, "门店")
+    assert [v for v, _ in parts] == ["一店", "二店", "十二店"]
+    pos = dict(parts)["二店"]
+    row = ag.subtotal_row(df.iloc[pos], "门店", [("金额", "求和"), ("金额", "平均"), ("数量", "最大")])
+    assert row[:4] == ["小计", None, 50, 5]

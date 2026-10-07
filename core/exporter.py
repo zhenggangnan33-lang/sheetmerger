@@ -324,16 +324,44 @@ def _frame_rows(df: pd.DataFrame) -> list[list[Any]]:
     return [list(r) for r in df.itertuples(index=False, name=None)]
 
 
+_BAD_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
+MAX_SHEET_TITLE = 31
+
+
+def safe_sheet_title(name: str, used: set[str]) -> str:
+    """Excel Sheet 名：去掉非法字符、限 31 字、不重名（不区分大小写）。"""
+    base = _BAD_SHEET_CHARS.sub("_", str(name)).strip().strip("'") or "Sheet"
+    base = base[:MAX_SHEET_TITLE]
+    title, n = base, 2
+    while title.lower() in used:
+        suffix = f"_{n}"
+        title = base[:MAX_SHEET_TITLE - len(suffix)] + suffix
+        n += 1
+    used.add(title.lower())
+    return title
+
+
 def export_result(path: str | Path, summary: pd.DataFrame, detail: pd.DataFrame,
-                  issues: list[Issue], plain_columns: Iterable[str] = ()) -> Path:
-    """写出结果文件。issues 需已按严重程度排序。plain_columns 中的列（如行号）不加千分位。"""
+                  issues: list[Issue] | None, plain_columns: Iterable[str] = (),
+                  extra_sheets: Iterable[tuple[str, list[str], list[list[Any]]]] = ()) -> Path:
+    """写出结果文件。
+
+    Sheet 顺序：汇总 → extra_sheets（如按门店拆分的各 Sheet）→ 明细 → 问题清单。
+    issues 需已按严重程度排序；传 None 则不写问题清单。plain_columns 中的列（如行号）不加千分位。
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    specs = (_make_specs(SHEET_SUMMARY, list(summary.columns), _frame_rows(summary))
-             + _make_specs(SHEET_DETAIL, list(detail.columns), _frame_rows(detail),
-                           plain_columns=plain_columns)
-             + _make_specs(SHEET_ISSUES, ISSUE_COLUMNS, [i.to_row() for i in issues],
-                           severity_col=0, plain_columns={"行号"}))
+    plain_columns = list(plain_columns)
+    used = {SHEET_SUMMARY.lower(), SHEET_DETAIL.lower(), SHEET_ISSUES.lower()}
+    specs = _make_specs(SHEET_SUMMARY, list(summary.columns), _frame_rows(summary))
+    for title, columns, rows in extra_sheets:
+        specs += _make_specs(safe_sheet_title(title, used), columns, rows,
+                             plain_columns=plain_columns)
+    specs += _make_specs(SHEET_DETAIL, list(detail.columns), _frame_rows(detail),
+                         plain_columns=plain_columns)
+    if issues is not None:
+        specs += _make_specs(SHEET_ISSUES, ISSUE_COLUMNS, [i.to_row() for i in issues],
+                             severity_col=0, plain_columns={"行号"})
     skeleton = path.with_name(path.stem + ".~skeleton.xlsx")
     tmp = path.with_name(path.stem + ".~tmp.xlsx")
     try:
