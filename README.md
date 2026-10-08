@@ -16,7 +16,7 @@
 ## 一、安装
 
 1. 系统要求：Windows 10 / 11（64 位）。不需要安装 Excel 或 WPS（查看结果时需要）。
-2. 解压后把整个 `SheetMerger_v1.0.5` 文件夹放到固定位置（如 `D:\SheetMerger`），
+2. 解压后把整个 `SheetMerger_v1.1.0` 文件夹放到固定位置（如 `D:\SheetMerger`），
    双击 `SheetMerger.exe` 即可运行，无需安装。
 3. **创建桌面快捷方式**：双击文件夹里的 `创建桌面快捷方式.bat`，桌面会出现"SheetMerger 多表汇总"图标。
    （也可以右键 `SheetMerger.exe` → 发送到 → 桌面快捷方式。之后如果移动了文件夹，需要重新创建。）
