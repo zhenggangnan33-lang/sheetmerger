@@ -21,5 +21,6 @@
   "成本": {"type": "number", "aliases": ["成本", "成本金额", "总成本"]},
   "税额": {"type": "number", "aliases": ["税额", "税金"]},
   "经手人": {"type": "text", "aliases": ["经手人", "经办人", "业务员", "销售员", "收银员"]},
-  "备注": {"type": "text", "aliases": ["备注", "说明", "附注"]}
+  "备注": {"type": "text", "aliases": ["备注", "说明", "附注"]},
+  "盘点轮次": {"type": "text", "aliases": ["盘点轮次", "轮次", "盘点次数", "初复盘", "盘次", "count round", "round"]}
 }

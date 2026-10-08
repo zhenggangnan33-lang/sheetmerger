@@ -1,4 +1,4 @@
-"""导出 xlsx：汇总 / 明细 / 问题清单 三个 Sheet。
+"""导出 xlsx：汇总 / 明细 / 问题清单 三个 Sheet（盘点报表另有 总览 / 按仓库 / 按商品编码 / 图表）。
 
 格式：表头加粗带底色、冻结首行、自动列宽、数值列千分位、日期列统一格式。
 
@@ -24,6 +24,9 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.marker import DataPoint
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -140,6 +143,27 @@ def _safe_value(v: Any) -> Any:
 
 # ---------------------------------------------------------------- Sheet 描述
 @dataclass
+class ChartSpec:
+    """图表 Sheet 中的一张 Excel 原生图表，数据引用其他 Sheet 的单元格（改数据后图表跟着变）。
+
+    columns 为 1 开始的列号；rows 为数据行数（表头在第 1 行）。
+    horizontal=True 为横向条形图；signed=True 时负数画成红色（盘亏）。
+    """
+    title: str
+    sheet: str
+    category_col: int
+    value_cols: list[int]
+    rows: int
+    horizontal: bool = False
+    signed: bool = False
+    values: list[float] | None = None      # signed=True 时用来判断哪些柱子是负数
+    number_format: str = FMT_INT
+
+
+CHART_BLUE, CHART_GREY, CHART_RED, CHART_GREEN = "2F6FDB", "A9B4C4", "D64545", "1E9E5A"
+
+
+@dataclass
 class _SheetSpec:
     title: str
     columns: list[str]
@@ -147,6 +171,7 @@ class _SheetSpec:
     formats: list[str | None]
     widths: list[float]
     severity_col: int | None = None
+    mixed_cols: frozenset = frozenset()
 
 
 def _make_specs(title: str, columns: list[str], rows: list[list[Any]],
@@ -159,18 +184,83 @@ def _make_specs(title: str, columns: list[str], rows: list[list[Any]],
     for i, name in enumerate(columns):
         w = max([_display_width(name)] + [_display_width(r[i]) for r in rows[:WIDTH_SAMPLE_ROWS]])
         widths.append(min(max(w + 2, MIN_WIDTH), MAX_WIDTH))
+    mixed = frozenset(i for i, f in enumerate(formats)
+                      if f == FMT_FLOAT and any(isinstance(r[i], str) for r in rows))
     per_sheet = EXCEL_MAX_ROWS - 1
     chunks = [rows[i:i + per_sheet] for i in range(0, len(rows), per_sheet)] or [[]]
     return [_SheetSpec(title if n == 1 else f"{title}_{n}", columns, chunk, formats, widths,
-                       severity_col)
+                       severity_col, mixed)
             for n, chunk in enumerate(chunks, start=1)]
 
 
 # ---------------------------------------------------------------- 第 1 步：openpyxl 骨架
-def _write_skeleton(path: Path, specs: list[_SheetSpec]) -> None:
+def _make_chart(spec: ChartSpec, wb_sheets: dict) -> BarChart:
+    ws = wb_sheets[spec.sheet]
+    chart = BarChart()
+    chart.type = "bar" if spec.horizontal else "col"
+    chart.title = spec.title
+    chart.style = 10
+    chart.legend = None if len(spec.value_cols) == 1 else chart.legend
+    if chart.legend is not None:
+        chart.legend.position = "b"
+    for col in spec.value_cols:
+        chart.add_data(Reference(ws, min_col=col, min_row=1, max_row=spec.rows + 1),
+                       titles_from_data=True)
+    chart.set_categories(Reference(ws, min_col=spec.category_col, min_row=2,
+                                   max_row=spec.rows + 1))
+    palette = [CHART_GREY, CHART_BLUE]
+    for i, series in enumerate(chart.series):
+        color = palette[i % 2] if len(chart.series) > 1 else CHART_BLUE
+        series.graphicalProperties.solidFill = color
+        series.graphicalProperties.line.solidFill = color
+        series.invertIfNegative = False
+        if spec.signed and spec.values:
+            for idx, v in enumerate(spec.values):
+                pt = DataPoint(idx=idx, invertIfNegative=False)
+                c = CHART_RED if v < 0 else CHART_GREEN
+                pt.graphicalProperties.solidFill = c
+                pt.graphicalProperties.line.solidFill = c
+                series.dPt.append(pt)
+    if len(spec.value_cols) == 1:
+        labels = DataLabelList()
+        labels.showVal = True
+        labels.showSerName = labels.showCatName = labels.showLegendKey = False
+        labels.showPercent = labels.showLeaderLines = False
+        labels.numFmt = spec.number_format
+        chart.series[0].dLbls = labels
+    chart.gapWidth = 60
+    chart.y_axis.numFmt = FMT_INT
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    if spec.horizontal:
+        chart.x_axis.scaling.orientation = "maxMin"     # 条形图从上到下与表格顺序一致
+        # 坐标轴标签放在最左侧，避免负数柱子压住类别名
+        chart.x_axis.tickLblPos = "low"
+    n = max(spec.rows, 1)
+    chart.width = 18
+    chart.height = max(7.5, 0.6 * n + 2.5) if spec.horizontal else 9
+    return chart
+
+
+def _write_skeleton(path: Path, specs: list[_SheetSpec],
+                    charts: list[ChartSpec] = (), chart_sheet: str | None = None,
+                    chart_after: str | None = None) -> None:
     wb = Workbook(write_only=True)
+    created = {}
+
+    def add_chart_sheet() -> None:
+        ws = wb.create_sheet(chart_sheet)
+        ws.append(["下列图表引用本文件中各 Sheet 的数据，修改数据后图表会跟着变化。"])
+        row = 3
+        for c in charts:
+            chart = _make_chart(c, created)
+            ws.add_chart(chart, f"A{row}")
+            row += int(chart.height / 0.5) + 2      # 每行约 0.5 厘米
+        created[chart_sheet] = ws
+
     for spec in specs:
         ws = wb.create_sheet(spec.title)
+        created[spec.title] = ws
         for i, w in enumerate(spec.widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
@@ -189,11 +279,15 @@ def _write_skeleton(path: Path, specs: list[_SheetSpec]) -> None:
                 setattr(c, k, v)
             sample.append(c)
         ws.append(sample)
+        if charts and chart_sheet and spec.title == chart_after:
+            add_chart_sheet()
+    if charts and chart_sheet and chart_sheet not in created:
+        add_chart_sheet()
     wb.save(path)
 
 
-def _sheet_paths(zf: zipfile.ZipFile) -> list[str]:
-    """按工作簿中的顺序返回各 Sheet 的 XML 路径。"""
+def _sheet_paths(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Sheet 名 -> XML 路径。"""
     from xml.etree import ElementTree as ET
     rel_ns = "{http://schemas.openxmlformats.org/package/2006/relationships}"
     r_id = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
@@ -201,11 +295,11 @@ def _sheet_paths(zf: zipfile.ZipFile) -> list[str]:
     rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
     targets = {r.get("Id"): r.get("Target") for r in rels.iter(f"{rel_ns}Relationship")}
     workbook = ET.fromstring(zf.read("xl/workbook.xml"))
-    paths = []
+    paths = {}
     for sheet in workbook.iter(f"{main_ns}sheet"):
         target = targets[sheet.get(r_id)]
-        paths.append(target.lstrip("/") if target.startswith("/")
-                     else str(PurePosixPath("xl") / target))
+        paths[sheet.get("name")] = (target.lstrip("/") if target.startswith("/")
+                                    else str(PurePosixPath("xl") / target))
     return paths
 
 
@@ -220,6 +314,10 @@ def _rows_xml(spec: _SheetSpec, styles: dict[str, str]) -> Iterator[str]:
     date_style = [col_style[i] if f in (FMT_DATE, FMT_DATETIME) else None
                   for i, f in enumerate(spec.formats)]
     num_style = [col_style[i] if f in (FMT_INT, FMT_FLOAT) else "" for i, f in enumerate(spec.formats)]
+    # 数字和文字混排的列（如总览的“值”列）里，整数用整数格式：仓库数 16 不应显示成 16.00
+    s_int = f' s="{styles[FMT_INT]}"'
+    int_style = [s_int if f == FMT_FLOAT and i in spec.mixed_cols else num_style[i]
+                 for i, f in enumerate(spec.formats)]
     s_date, s_dt = f' s="{styles[FMT_DATE]}"', f' s="{styles[FMT_DATETIME]}"'
     sev_col = spec.severity_col
     sev_style = {k: f' s="{styles[k]}"' for k in (ERROR, WARNING)}
@@ -251,7 +349,7 @@ def _rows_xml(spec: _SheetSpec, styles: dict[str, str]) -> Iterator[str]:
                 st = sev_style.get(v, "") if j == sev_col else ""
                 parts.append(f'<c r="{ref}"{st} t="inlineStr"><is><t{space}>{v}</t></is></c>')
             elif t is int:
-                parts.append(f'<c r="{ref}"{num_style[j]} t="n"><v>{v}</v></c>')
+                parts.append(f'<c r="{ref}"{int_style[j]} t="n"><v>{v}</v></c>')
             elif t is float:
                 if v != v or v in (math.inf, -math.inf):
                     continue
@@ -296,7 +394,7 @@ def _write_final(skeleton: Path, target: Path, specs: list[_SheetSpec]) -> None:
     with zipfile.ZipFile(skeleton) as src, \
             zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as dst:
         sheet_paths = _sheet_paths(src)
-        spec_by_path = dict(zip(sheet_paths, specs))
+        spec_by_path = {sheet_paths[s.title]: s for s in specs}
         for info in src.infolist():
             data = src.read(info.filename)
             spec = spec_by_path.get(info.filename)
@@ -341,19 +439,30 @@ def safe_sheet_title(name: str, used: set[str]) -> str:
     return title
 
 
-def export_result(path: str | Path, summary: pd.DataFrame, detail: pd.DataFrame,
+def export_result(path: str | Path, summary: pd.DataFrame | None, detail: pd.DataFrame,
                   issues: list[Issue] | None, plain_columns: Iterable[str] = (),
-                  extra_sheets: Iterable[tuple[str, list[str], list[list[Any]]]] = ()) -> Path:
+                  extra_sheets: Iterable[tuple[str, list[str], list[list[Any]]]] = (),
+                  front_sheets: Iterable[tuple[str, pd.DataFrame]] = (),
+                  charts: Iterable[ChartSpec] = (), chart_sheet: str = "图表") -> Path:
     """写出结果文件。
 
-    Sheet 顺序：汇总 → extra_sheets（如按门店拆分的各 Sheet）→ 明细 → 问题清单。
+    Sheet 顺序：front_sheets（盘点报表的总览、按仓库…）→ 图表 → 汇总 → extra_sheets（如按门店拆分的
+    各 Sheet）→ 明细 → 问题清单。summary 为 None 时不写汇总 Sheet。
     issues 需已按严重程度排序；传 None 则不写问题清单。plain_columns 中的列（如行号）不加千分位。
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     plain_columns = list(plain_columns)
+    front_sheets, charts = list(front_sheets), list(charts)
     used = {SHEET_SUMMARY.lower(), SHEET_DETAIL.lower(), SHEET_ISSUES.lower()}
-    specs = _make_specs(SHEET_SUMMARY, list(summary.columns), _frame_rows(summary))
+    if charts:
+        used.add(chart_sheet.lower())
+    specs: list[_SheetSpec] = []
+    for title, df in front_sheets:
+        specs += _make_specs(safe_sheet_title(title, used), list(df.columns), _frame_rows(df))
+    chart_after = specs[-1].title if specs else None
+    if summary is not None:
+        specs += _make_specs(SHEET_SUMMARY, list(summary.columns), _frame_rows(summary))
     for title, columns, rows in extra_sheets:
         specs += _make_specs(safe_sheet_title(title, used), columns, rows,
                              plain_columns=plain_columns)
@@ -365,7 +474,7 @@ def export_result(path: str | Path, summary: pd.DataFrame, detail: pd.DataFrame,
     skeleton = path.with_name(path.stem + ".~skeleton.xlsx")
     tmp = path.with_name(path.stem + ".~tmp.xlsx")
     try:
-        _write_skeleton(skeleton, specs)
+        _write_skeleton(skeleton, specs, charts, chart_sheet, chart_after)
         _write_final(skeleton, tmp, specs)
         tmp.replace(path)
     finally:

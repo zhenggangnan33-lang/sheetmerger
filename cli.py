@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--split", help="按这一列拆分输出，如 --split 门店")
     p.add_argument("--split-mode", choices=["sheet", "file"],
                    help="拆分方式：sheet 每个值一个 Sheet（默认）/ file 每个值一个文件")
+    p.add_argument("--report", choices=("auto", "inventory", "generic"),
+                   help="报表样式：auto 有账面/实盘数量时出盘点报表(默认) / inventory 盘点报表 / generic 通用汇总")
+    p.add_argument("--keep-name-in-table", action="store_true",
+                   help="文件名与“仓库/门店”列冲突时以表内为准（默认以文件名为准）")
     p.add_argument("--dedup", choices=aggregator.DEDUP_MODES,
                    help="重复记录处理：off 不检查 / mark 只标记(默认) / drop 删除")
     p.add_argument("--dedup-cols", action="append", help="按哪些列判断重复，默认全部列")
@@ -84,6 +88,10 @@ def config_from_args(args: argparse.Namespace) -> TaskConfig:
         cfg.split_by = args.split.strip()
     if args.split_mode:
         cfg.split_mode = args.split_mode
+    if args.report:
+        cfg.report_mode = args.report
+    if args.keep_name_in_table:
+        cfg.name_from_file = False
     if args.dedup:
         cfg.dedup_mode = args.dedup
     if args.dedup_cols:
@@ -167,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"问题：错误 {c[ERROR]}，警告 {c[WARNING]}，提示 {c[INFO]}")
     if result.output_path:
         print(f"结果文件：{result.output_path}")
+        if result.report is not None:
+            print(f"盘点报表：总览、{result.report.location_sheet}、按商品编码、图表")
         if result.split_dir:
             print(f"拆分文件：{result.split_dir}（{result.split_count} 个）")
         elif result.split_count:
