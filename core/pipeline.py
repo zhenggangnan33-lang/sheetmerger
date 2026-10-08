@@ -13,14 +13,14 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from . import aggregator, cleaner, exporter, inventory, reader
+from . import aggregator, auto_summary, cleaner, exporter, reader
 from .header_mapper import (STATUS_AUTO, STATUS_IGNORED, STATUS_MANUAL, STATUS_PENDING,
                             STATUS_UNMATCHED, AliasStore, MappingSuggestion,
                             suggest_for_columns)
 from .validator import (ERROR, INFO, WARNING, IssueCollector, T_AGG, T_BAD_DATE,
                         T_BAD_NUMBER, T_MAP_CONFLICT, T_MAP_PENDING, T_MAP_UNMATCHED, T_MISSING_COLUMN,
                         T_NO_STD_COLUMN, T_READ_FAIL, T_EMPTY_VALUE, T_CODE_FIXED,
-                        T_DATE_NO_YEAR)
+                        T_DATE_NO_YEAR, T_NAME_MISMATCH)
 
 OUTPUT_PREFIX = "汇总结果_"     # 本工具生成的结果文件，扫描时跳过，避免重复汇总
 
@@ -92,7 +92,7 @@ class RunResult:
     elapsed: float = 0.0
     split_dir: Path | None = None          # 按列拆分成文件时的文件夹
     split_count: int = 0                   # 拆分出的 Sheet / 文件数
-    report: "inventory.InventoryReport | None" = None   # 盘点报表（未启用时为 None）
+    auto_plan: "auto_summary.AutoPlan | None" = None   # 没选分组列时的自动汇总方案
 
     @property
     def issue_counts(self) -> dict[str, int]:
@@ -261,9 +261,47 @@ def _pad_numeric_codes(records: list[list[Any]], numeric_codes: list[tuple[int, 
                        file=f, sheet=sh, column=columns[pos])
 
 
+NAME_COLUMNS = ("门店", "仓库", "部门", "客户", "供应商")
+
+
+def _name_from_filename(records: list[list[Any]], columns: list[str],
+                        issues: IssueCollector, fix: bool) -> None:
+    """文件名是“北仑三号仓”，“仓库”列却全写着“北仑二号仓”，而文件夹里正好有“北仑二号仓”文件
+    （套用模板没改）。fix=True 时按文件名改正，否则只提示。records 末三列是来源文件/Sheet/行号。"""
+    for col in NAME_COLUMNS:
+        if col not in columns:
+            continue
+        pos = columns.index(col)
+        values_by_file: dict[str, set] = {}
+        for rec in records:
+            if rec[pos] is not None:
+                values_by_file.setdefault(rec[-3], set()).add(rec[pos])
+        stems = {Path(f).stem: f for f in values_by_file}
+        for f, values in values_by_file.items():
+            stem = Path(f).stem
+            if len(values) != 1:
+                continue
+            (value,) = values
+            if str(value) == stem or str(value) not in stems:
+                continue
+            if fix:
+                for rec in records:
+                    if rec[-3] == f and rec[pos] == value:
+                        rec[pos] = stem
+                msg = (f"文件名是“{stem}”，但“{col}”列全部写的是“{value}”（与文件“{stems[str(value)]}”"
+                       f"相同，疑似套用模板没改），已按文件名改为“{stem}”；如以表内为准，请修改原表后重跑")
+            else:
+                msg = (f"文件名是“{stem}”，但“{col}”列全部写的是“{value}”，与文件“{stems[str(value)]}”"
+                       f"相同；按“{col}”汇总时两个文件的数据会合在一起，请核对是否套用模板没改")
+            issues.add(WARNING, T_NAME_MISMATCH, msg, file=f, column=col, value=value)
+
+
 def _make_summary(config, detail: pd.DataFrame, aggs: list[tuple[str, str]],
-                  issues: IssueCollector) -> pd.DataFrame:
+                  issues: IssueCollector, auto: "auto_summary.AutoPlan | None" = None
+                  ) -> pd.DataFrame:
     pivot = (getattr(config, "pivot_column", "") or "").strip()
+    if auto is not None and not config.group_by and not pivot:
+        return auto_summary.summarize(detail, auto)
     if pivot:
         return aggregator.pivot_summarize(detail, config.group_by, pivot, aggs, issues)
     return aggregator.summarize(detail, config.group_by, aggs, issues,
@@ -287,7 +325,7 @@ def _export_split_files(config, out: Path, detail: pd.DataFrame, split_col: str,
                                                 or [split_col], aggs, IssueCollector(),
                                                 add_count=config.add_count_column)
         else:
-            part_summary = _make_summary(config, part, aggs, IssueCollector())
+            part_summary = _make_summary(config, part, aggs, IssueCollector(), result.auto_plan)
         name = safe_filename(aggregator.value_label(value), used) + ".xlsx"
         exporter.export_result(folder / name, part_summary, part, None,
                                plain_columns=[aggregator.COL_ROW])
@@ -377,13 +415,9 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
             files_with_rows.add(t.rel)
         result.sheets_read += 1
     _pad_numeric_codes(records, numeric_codes, columns, issues)
-    inventory.name_from_filename(records, columns, issues, fix=config.name_from_file)
+    _name_from_filename(records, columns, issues, fix=config.name_from_file)
 
     detail = aggregator.build_detail(records, all_cols)
-    is_inventory = inventory.applies(columns, config.report_mode)
-    if is_inventory:
-        detail = inventory.keep_last_round(detail, issues)
-        detail = inventory.add_amount(detail)
     progress(82, "检查重复记录")
     detail = aggregator.deduplicate(detail, config.dedup_mode, config.dedup_columns, issues)
     progress(86, "分组汇总")
@@ -397,17 +431,19 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
         if types.get(col) == cleaner.TYPE_NUMBER:
             issues.add(WARNING, T_AGG, f"分组列“{col}”是数值列，按它分组通常没有意义；"
                        "数值列一般放在“汇总列”里求和", column=col)
-    # 盘点报表模式下没选分组列时，不再单独输出“汇总”Sheet（按仓库 / 按商品编码 已经覆盖）
-    summary = (_make_summary(config, detail, aggs, issues)
-               if config.group_by or not is_inventory else None)
-    if is_inventory:
-        if inventory.COL_BOOK not in detail.columns or inventory.COL_REAL not in detail.columns:
-            issues.add(ERROR, T_AGG, "盘点报表需要“账面数量”和“实盘数量”两列，明细中缺少，已改为通用汇总")
-            summary = summary if summary is not None else _make_summary(config, detail, aggs, issues)
-        else:
-            result.report = inventory.build_report(detail, issues)
-    result.detail = detail
-    result.summary = summary if summary is not None else result.report.by_location
+    # 没设汇总列时：数值列全部求和（单价等比率列除外），与自动汇总的习惯一致
+    sources: dict[str, set] = {}
+    for p, targets in usable:
+        for target, src in zip(targets, p.table.columns):
+            if target:
+                sources.setdefault(target, set()).add(str(src))
+    plan = auto_summary.make_plan(detail, store, types, aggs, sources)
+    if not aggs:
+        aggs = list(plan.measures)
+    if not config.group_by and not (config.pivot_column or "").strip():
+        result.auto_plan = plan
+    summary = _make_summary(config, detail, aggs, issues, result.auto_plan)
+    result.detail, result.summary = detail, summary
 
     # 按列拆分
     split_col = (config.split_by or "").strip()
@@ -437,14 +473,9 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
                 rows.append(aggregator.subtotal_row(part, split_col, aggs))
                 extra.append((aggregator.value_label(value), list(detail.columns), rows))
             result.split_count = len(extra)
-        front = []
-        if result.report is not None:
-            result.report = inventory.build_report(detail, issues, result.issue_counts)
-            front = result.report.sheets()
         try:
             exporter.export_result(out, summary, detail, issues.sorted(),
-                                   plain_columns=[aggregator.COL_ROW], extra_sheets=extra,
-                                   front_sheets=front)
+                                   plain_columns=[aggregator.COL_ROW], extra_sheets=extra)
             result.output_path = out
             if parts and config.split_mode == SPLIT_FILE:
                 _export_split_files(config, out, detail, split_col, parts, aggs, result,

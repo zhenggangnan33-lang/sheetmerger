@@ -57,9 +57,6 @@ def _hint(text: str) -> QLabel:
 DEDUP_LABELS = [("只标记重复（保留全部记录）", aggregator.DEDUP_MARK),
                 ("删除重复（保留第一次出现的）", aggregator.DEDUP_DROP),
                 ("不检查重复", aggregator.DEDUP_OFF)]
-REPORT_LABELS = [("自动（有账面/实盘数量时出盘点报表）", "auto"),
-                 ("盘点报表", "inventory"),
-                 ("通用汇总", "generic")]
 AGG_FUNC_NAMES = list(aggregator.AGG_FUNCS)
 ISSUE_PREVIEW_LIMIT = 1000
 
@@ -493,15 +490,9 @@ class SettingsPage(QWidget):
         dl.addRow("处理方式：", self.dedup_combo)
         dl.addRow("判断依据（不勾选 = 全部列）：", self.dedup_list)
 
-        self.report_combo = QComboBox()
-        for label, value in REPORT_LABELS:
-            self.report_combo.addItem(label, value)
-        self.report_combo.setToolTip("盘点报表：总览、按仓库、按商品编码；多轮盘点以最后一轮为准，"
-                                     "实盘金额 = 实盘数量 × 单价")
         self.name_box = QCheckBox("文件名与表内仓库/门店名冲突时，以文件名为准")
         self.name_box.setToolTip("例：文件“北仑三号仓.xlsx”里仓库列全写着“北仑二号仓”（套用模板没改），"
                                  "按北仑三号仓计算，并在问题清单中提示")
-        dl.addRow("报表样式：", self.report_combo)
         dl.addRow(self.name_box)
 
         self.out_dir = QLineEdit()
@@ -652,7 +643,7 @@ class SettingsPage(QWidget):
         self.group_input.addItems(columns)
         self.group_input.setEditText("")
         self.agg_table.setRowCount(0)
-        aggs = cfg.aggregations or ([AggSpec("金额", "求和")] if "金额" in columns else [])
+        aggs = cfg.aggregations
         for a in aggs:
             self.add_agg(a.column, a.func)
         self.count_box.setChecked(cfg.add_count_column)
@@ -660,7 +651,6 @@ class SettingsPage(QWidget):
         self._fill_column_choice(self.split_combo, columns, cfg.split_by, "（不拆分）")
         self.split_mode_combo.setCurrentIndex(max(self.split_mode_combo.findData(cfg.split_mode), 0))
         self.split_mode_combo.setEnabled(bool(cfg.split_by))
-        self.report_combo.setCurrentIndex(max(0, self.report_combo.findData(cfg.report_mode)))
         self.name_box.setChecked(cfg.name_from_file)
         idx = max(0, self.dedup_combo.findData(cfg.dedup_mode))
         self.dedup_combo.setCurrentIndex(idx)
@@ -684,7 +674,6 @@ class SettingsPage(QWidget):
         cfg.split_by = self.split_combo.currentData() or ""
         cfg.split_mode = self.split_mode_combo.currentData() or "sheet"
         cfg.dedup_mode = self.dedup_combo.currentData()
-        cfg.report_mode = self.report_combo.currentData() or "auto"
         cfg.name_from_file = self.name_box.isChecked()
         cfg.dedup_columns = self._checked(self.dedup_list)
         cfg.output_dir = self.out_dir.text().strip()
@@ -773,15 +762,13 @@ class RunPage(QWidget):
 
     def show_overview(self, cfg: TaskConfig) -> None:
         aggs = "、".join(f"{a.column}({aggregator.normalize_agg_func(a.func) or a.func})"
-                        for a in cfg.aggregations) or "（无，仅统计记录数）"
+                        for a in cfg.aggregations) or "（未设：数值列全部求和，单价等不求和）"
         dedup = dict((v, k) for k, v in DEDUP_LABELS).get(cfg.dedup_mode, cfg.dedup_mode)
         import html
         items = [
             ("输入文件夹", f"{cfg.input_folder}{'（含子文件夹）' if cfg.recursive else ''}"),
-            ("分组列", "、".join(cfg.group_by) or ("（不分组，只出总计）" if cfg.report_mode == "generic"
-                                                 else "（未选；盘点数据按仓库、商品编码出报表）")),
+            ("分组列", "、".join(cfg.group_by) or "（未选：自动按编码汇总，带出名称、出现门店/仓库数和数值合计）"),
             ("汇总列", aggs + ("，附加记录数" if cfg.add_count_column else "")),
-            ("报表样式", dict((v, k) for k, v in REPORT_LABELS).get(cfg.report_mode, cfg.report_mode)),
             ("重复记录", dedup + (f"（按 {'、'.join(cfg.dedup_columns)}）" if cfg.dedup_columns else "")),
             ("交叉表与拆分",
              "、".join(filter(None, [
@@ -835,9 +822,8 @@ class RunPage(QWidget):
         theme.stagger_in(self.tiles, each=0.08, dy=12)
         if result.output_path:
             text += f"\n结果文件：{result.output_path}"
-            if result.report is not None:
-                text += (f"\n盘点报表：总览、{result.report.location_sheet}、按商品编码"
-                         "（多轮盘点以最后一轮为准）")
+            if result.auto_plan is not None:
+                text += f"\n汇总方式：{result.auto_plan.describe()}"
             if result.split_dir:
                 text += f"\n拆分文件：{result.split_dir}（{result.split_count} 个）"
             elif result.split_count:

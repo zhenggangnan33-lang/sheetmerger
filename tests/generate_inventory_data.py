@@ -195,7 +195,7 @@ def generate(out: Path) -> dict:
     first = [dict(r, 实盘数量=r["实盘数量"] + 5) for r in recs[:8]]
     rows += [[r[h] for h in HEADER] + ["初盘"] for r in first]
     save(out / "象山仓.xlsx", rows)
-    count(recs)                    # 口径：以复盘为准，初盘行不计入
+    count(recs + first)            # 工具不认识“初盘/复盘”这种业务规则，两轮都会计入（并提示重复）
 
     # 北仑三号仓：“仓库”列套用模板没改，写成了北仑二号仓
     recs = records(rng, cat, "北仑二号仓")

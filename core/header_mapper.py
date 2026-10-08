@@ -30,6 +30,13 @@ TYPE_DATE = "date"
 TYPE_CODE = "code"
 COLUMN_TYPES = (TYPE_TEXT, TYPE_NUMBER, TYPE_DATE, TYPE_CODE)
 
+# 列在自动汇总中的角色（写在别名字典里，用户字典可以覆盖）
+ROLE_KEY = "key"          # 编码：按它分组（如 商品编码）
+ROLE_NAME = "name"        # 名称：跟着编码显示（如 商品名称）；没有编码列时用它分组
+ROLE_ENTITY = "entity"    # 主体：统计每个编码出现在几个主体里（如 门店、仓库）
+ROLE_RATE = "rate"        # 单价、比率类数值：不求和
+COLUMN_ROLES = (ROLE_KEY, ROLE_NAME, ROLE_ENTITY, ROLE_RATE)
+
 DEFAULT_ALIAS_PATH = Path(__file__).with_name("aliases_default.json")
 
 _BRACKETS = re.compile(r"\([^)]*\)|\[[^\]]*\]|【[^】]*】|〔[^〕]*〕")
@@ -87,6 +94,7 @@ class ColumnSpec:
     name: str
     type: str = TYPE_TEXT
     aliases: list[str] = field(default_factory=list)
+    role: str = ""
 
 
 class AliasStore:
@@ -118,6 +126,8 @@ class AliasStore:
             spec = self.specs.get(name) or ColumnSpec(name=name)
             if info.get("type") in COLUMN_TYPES:
                 spec.type = info["type"]
+            if "role" in info and (info["role"] in COLUMN_ROLES or info["role"] == ""):
+                spec.role = info["role"]
             for a in [name, *info.get("aliases", [])]:
                 if a not in spec.aliases:
                     spec.aliases.append(a)
@@ -133,6 +143,10 @@ class AliasStore:
     @property
     def standard_names(self) -> list[str]:
         return list(self.specs)
+
+    def column_role(self, name: str) -> str:
+        spec = self.specs.get(name)
+        return spec.role if spec else ""
 
     def column_type(self, name: str) -> str | None:
         spec = self.specs.get(name)
@@ -150,6 +164,18 @@ class AliasStore:
         if source not in entry["aliases"] and normalize_header(source) != normalize_header(target):
             entry["aliases"].append(source)
         self._merge({target: entry})
+        self._rebuild_index()
+        self.save()
+
+    def learn_role(self, column: str, role: str) -> None:
+        """记住某列在自动汇总中的角色（key / name / entity / rate，空字符串 = 普通列）。"""
+        if not column or (role and role not in COLUMN_ROLES):
+            raise ValueError(f"未知的列角色：{role}")
+        entry = self._user.setdefault(column, {"aliases": []})
+        entry["role"] = role
+        if column not in self.specs and "type" not in entry:
+            entry["type"] = TYPE_NUMBER if role == ROLE_RATE else TYPE_TEXT
+        self._merge({column: entry})
         self._rebuild_index()
         self.save()
 

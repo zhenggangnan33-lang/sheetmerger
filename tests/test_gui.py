@@ -69,7 +69,8 @@ def test_wizard_end_to_end(win, data_dir, tmp_path):
     for k in range(page.group_list.count()):
         if page.group_list.item(k).text() == "门店":
             page.group_list.item(k).setCheckState(Qt.Checked)
-    assert page.agg_table.rowCount() == 1            # 默认 金额 求和
+    assert page.agg_table.rowCount() == 0            # 默认不预设：数值列全部求和
+    page.add_agg("金额", "求和")
     page.add_agg("数量", "平均")
     assert not page.count_box.isChecked()          # 默认不附加记录数
     page.count_box.setChecked(True)

@@ -35,7 +35,6 @@ class TaskConfig:
     pivot_column: str = ""           # 交叉表：把这一列的每个值展开成汇总表的一列（空 = 不展开）
     split_by: str = ""               # 按这一列拆分输出（空 = 不拆分）
     split_mode: str = "sheet"        # sheet 每个值一个 Sheet / file 每个值一个文件
-    report_mode: str = "auto"        # auto 有账面/实盘数量时出盘点报表 / inventory 盘点报表 / generic 通用汇总
     name_from_file: bool = True      # 文件名与“仓库/门店”列冲突（套用模板没改）时以文件名为准
     dedup_mode: str = "mark"         # off 不检查 / mark 只标记 / drop 删除重复
     dedup_columns: list[str] = field(default_factory=list)   # 为空表示按全部列

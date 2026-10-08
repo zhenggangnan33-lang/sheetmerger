@@ -1,4 +1,4 @@
-"""导出 xlsx：汇总 / 明细 / 问题清单 三个 Sheet（盘点报表另有 总览 / 按仓库 / 按商品编码）。
+"""导出 xlsx：汇总 / 明细 / 问题清单 三个 Sheet。
 
 格式：表头加粗带底色、冻结首行、自动列宽、数值列千分位、日期列统一格式。
 
@@ -350,22 +350,18 @@ def safe_sheet_title(name: str, used: set[str]) -> str:
 
 def export_result(path: str | Path, summary: pd.DataFrame | None, detail: pd.DataFrame,
                   issues: list[Issue] | None, plain_columns: Iterable[str] = (),
-                  extra_sheets: Iterable[tuple[str, list[str], list[list[Any]]]] = (),
-                  front_sheets: Iterable[tuple[str, pd.DataFrame]] = ()) -> Path:
+                  extra_sheets: Iterable[tuple[str, list[str], list[list[Any]]]] = ()) -> Path:
     """写出结果文件。
 
-    Sheet 顺序：front_sheets（盘点报表的总览、按仓库…）→ 汇总 → extra_sheets（如按门店拆分的
+    Sheet 顺序：汇总 → extra_sheets（如按门店拆分的
     各 Sheet）→ 明细 → 问题清单。summary 为 None 时不写汇总 Sheet。
     issues 需已按严重程度排序；传 None 则不写问题清单。plain_columns 中的列（如行号）不加千分位。
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     plain_columns = list(plain_columns)
-    front_sheets = list(front_sheets)
     used = {SHEET_SUMMARY.lower(), SHEET_DETAIL.lower(), SHEET_ISSUES.lower()}
     specs: list[_SheetSpec] = []
-    for title, df in front_sheets:
-        specs += _make_specs(safe_sheet_title(title, used), list(df.columns), _frame_rows(df))
     if summary is not None:
         specs += _make_specs(SHEET_SUMMARY, list(summary.columns), _frame_rows(summary))
     for title, columns, rows in extra_sheets:

@@ -25,8 +25,7 @@ def _by(result, kind):
 
 def test_totals_per_warehouse_match_answer(inv):
     folder, exp = inv
-    r = _run(folder, group_by=["仓库"],
-             aggregations=[AggSpec("账面数量"), AggSpec("实盘数量")])
+    r = _run(folder, group_by=["仓库"])        # 不设汇总列：数值列全部求和
     got = {row[0]: (row[1], row[2]) for row in r.summary.itertuples(index=False, name=None)}
     for wh, totals in exp["totals"].items():
         assert got[wh] == totals, wh
@@ -55,71 +54,42 @@ def test_each_trap_is_reported(inv):
     assert not _by(r, "日期无法识别")                              # 梅山仓 5 种写法都认得
 
 
-def test_rounds_keep_last(inv):
-    """象山仓 8 个商品盘了两轮：以复盘为准，初盘行不计入，并在问题清单中逐行说明。"""
+def test_rounds_flagged_by_warehouse_and_code(inv):
+    """初盘/复盘是业务口径，工具不擅自删除；按 仓库+商品编码 去重时逐条提示。"""
     folder, exp = inv
-    r = _run(folder, group_by=["仓库"], aggregations=[AggSpec("实盘数量")],
-             dedup_columns=["仓库", "商品编码"])
-    assert _by(r, "多轮盘点") == {"象山仓.xlsx": exp["duplicate_rounds"]}
-    assert not _by(r, "重复记录")["象山仓.xlsx"]
-    xs = r.detail[r.detail["仓库"] == "象山仓"]
-    assert set(xs["盘点轮次"]) == {"复盘"}
-
-
-def test_rounds_kept_in_generic_mode(inv):
-    folder, exp = inv
-    r = _run(folder, group_by=["仓库"], aggregations=[AggSpec("实盘数量")],
-             dedup_columns=["仓库", "商品编码"], report_mode="generic")
+    r = _run(folder, group_by=["仓库"], dedup_columns=["仓库", "商品编码"])
     assert _by(r, "重复记录")["象山仓.xlsx"] == exp["duplicate_rounds"]
-    assert r.report is None
 
 
 def test_filename_wins_over_template_value(inv):
     folder, _exp = inv
-    r = _run(folder, group_by=["仓库"], aggregations=[AggSpec("实盘数量")])
+    r = _run(folder, group_by=["仓库"])
     rows = r.detail[r.detail["来源文件"] == "北仑三号仓.xlsx"]
     assert set(rows["仓库"]) == {"北仑三号仓"}
-    r = _run(folder, group_by=["仓库"], aggregations=[AggSpec("实盘数量")], name_from_file=False)
+    r = _run(folder, group_by=["仓库"], name_from_file=False)
     rows = r.detail[r.detail["来源文件"] == "北仑三号仓.xlsx"]
     assert set(rows["仓库"]) == {"北仑二号仓"}
     assert _by(r, "文件名与内容不一致") == {"北仑三号仓.xlsx": 1}
 
 
-def test_inventory_report_sheets(inv, tmp_path):
-    """不选分组列也能出盘点报表：总览 / 按仓库 / 按商品编码，数字与标准答案一致。"""
-    import openpyxl
+def test_auto_summary_by_code(inv):
+    """不选分组列：按商品编码汇总，带出商品名称、出现仓库数，数值列求和，单价不求和。"""
     folder, exp = inv
-    cfg = TaskConfig(input_folder=str(folder), excluded=["仓库盘点模板.xlsx|*"],
-                     output_dir=str(tmp_path), output_name="r.xlsx")
-    r = pipeline.run(cfg)
-    assert r.output_path and r.report is not None
-    wb = openpyxl.load_workbook(r.output_path)
-    assert wb.sheetnames == ["总览", "按仓库", "按商品编码", "明细", "问题清单"]
-    rows = list(wb["按仓库"].iter_rows(values_only=True))
-    assert rows[0] == ("仓库", "商品数", "账面数量", "实盘数量", "实盘金额", "盘盈盘亏数量", "未盘商品数")
-    got = {row[0]: (row[2], row[3]) for row in rows[1:]}
-    assert got == exp["totals"]
-    by = {row[0]: row for row in rows[1:]}
-    assert by["宁海仓"][6] == exp["empty_real"]
-    assert by["宁海仓"][5] == by["宁海仓"][3] - by["宁海仓"][2]
-    overview = dict(wb["总览"].iter_rows(min_row=2, values_only=True))
-    assert overview["仓库数"] == len(exp["totals"])
-    assert overview["账面数量合计"] == sum(b for b, _ in exp["totals"].values())
-    assert overview["未盘商品数（实盘数量为空）"] == exp["empty_real"]
-    codes = [row[0] for row in wb["按商品编码"].iter_rows(min_row=2, values_only=True)]
-    assert set(codes) <= exp["catalog_codes"] and len(codes) == len(set(codes))
-
-
-def test_amount_is_quantity_times_price(inv):
-    folder, _exp = inv
     r = _run(folder)
-    d = r.detail
-    assert "实盘金额" in d.columns
-    for q, p, a in d[["实盘数量", "单价", "实盘金额"]].itertuples(index=False, name=None):
-        if q is None or p is None:
-            assert a is None
-        else:
-            assert a == round(q * p, 2)
+    s = r.summary
+    assert list(s.columns[:5]) == ["商品编码", "商品", "出现仓库数", "账面数量", "实盘数量"]
+    assert "单价" not in s.columns
+    body, total = s.iloc[:-1], s.iloc[-1]
+    assert total["商品编码"] == "总计"
+    codes = list(body["商品编码"])
+    assert len(codes) == len(set(codes)) and set(codes) <= exp["catalog_codes"]
+    assert body["商品"].notna().all()
+    assert body["出现仓库数"].max() <= len(exp["totals"])
+    assert total["出现仓库数"] == len(exp["totals"])
+    assert total["账面数量"] == sum(b for b, _ in exp["totals"].values())
+    assert total["实盘数量"] == sum(x for _, x in exp["totals"].values())
+    assert body["账面数量"].sum() == total["账面数量"]
+    assert r.auto_plan.key == "商品编码"
 
 
 def test_english_headers_mapped(inv):
