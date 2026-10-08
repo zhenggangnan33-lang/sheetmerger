@@ -32,7 +32,7 @@ from core.validator import ERROR, INFO, WARNING, IssueCollector
 from . import theme
 from .widgets import StatTile, StepBar
 
-APP_TITLE = "SheetMerger 多表汇总工具"
+APP_TITLE = "SheetMerger 多表汇总工具（普通版）"
 APP_ICON = Path(__file__).with_name("app_icon.png")
 STEP_TITLES = ["选择文件夹", "表头映射", "汇总设置", "运行"]
 
@@ -496,7 +496,7 @@ class SettingsPage(QWidget):
         self.report_combo = QComboBox()
         for label, value in REPORT_LABELS:
             self.report_combo.addItem(label, value)
-        self.report_combo.setToolTip("盘点报表：总览、按仓库、按商品编码、图表；多轮盘点以最后一轮为准，"
+        self.report_combo.setToolTip("盘点报表：总览、按仓库、按商品编码；多轮盘点以最后一轮为准，"
                                      "实盘金额 = 实盘数量 × 单价")
         self.name_box = QCheckBox("文件名与表内仓库/门店名冲突时，以文件名为准")
         self.name_box.setToolTip("例：文件“北仑三号仓.xlsx”里仓库列全写着“北仑二号仓”（套用模板没改），"
@@ -836,7 +836,7 @@ class RunPage(QWidget):
         if result.output_path:
             text += f"\n结果文件：{result.output_path}"
             if result.report is not None:
-                text += (f"\n盘点报表：总览、{result.report.location_sheet}、按商品编码、图表"
+                text += (f"\n盘点报表：总览、{result.report.location_sheet}、按商品编码"
                          "（多轮盘点以最后一轮为准）")
             if result.split_dir:
                 text += f"\n拆分文件：{result.split_dir}（{result.split_count} 个）"

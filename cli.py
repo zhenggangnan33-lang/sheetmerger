@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     if result.output_path:
         print(f"结果文件：{result.output_path}")
         if result.report is not None:
-            print(f"盘点报表：总览、{result.report.location_sheet}、按商品编码、图表")
+            print(f"盘点报表：总览、{result.report.location_sheet}、按商品编码")
         if result.split_dir:
             print(f"拆分文件：{result.split_dir}（{result.split_count} 个）")
         elif result.split_count:

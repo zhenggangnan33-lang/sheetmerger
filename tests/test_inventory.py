@@ -86,7 +86,7 @@ def test_filename_wins_over_template_value(inv):
 
 
 def test_inventory_report_sheets(inv, tmp_path):
-    """不选分组列也能出盘点报表：总览 / 按仓库 / 按商品编码 / 图表，数字与标准答案一致。"""
+    """不选分组列也能出盘点报表：总览 / 按仓库 / 按商品编码，数字与标准答案一致。"""
     import openpyxl
     folder, exp = inv
     cfg = TaskConfig(input_folder=str(folder), excluded=["仓库盘点模板.xlsx|*"],
@@ -94,7 +94,7 @@ def test_inventory_report_sheets(inv, tmp_path):
     r = pipeline.run(cfg)
     assert r.output_path and r.report is not None
     wb = openpyxl.load_workbook(r.output_path)
-    assert wb.sheetnames == ["总览", "按仓库", "按商品编码", "图表", "明细", "问题清单"]
+    assert wb.sheetnames == ["总览", "按仓库", "按商品编码", "明细", "问题清单"]
     rows = list(wb["按仓库"].iter_rows(values_only=True))
     assert rows[0] == ("仓库", "商品数", "账面数量", "实盘数量", "实盘金额", "盘盈盘亏数量", "未盘商品数")
     got = {row[0]: (row[2], row[3]) for row in rows[1:]}
@@ -108,7 +108,6 @@ def test_inventory_report_sheets(inv, tmp_path):
     assert overview["未盘商品数（实盘数量为空）"] == exp["empty_real"]
     codes = [row[0] for row in wb["按商品编码"].iter_rows(min_row=2, values_only=True)]
     assert set(codes) <= exp["catalog_codes"] and len(codes) == len(set(codes))
-    assert len(wb["图表"]._charts) == 3
 
 
 def test_amount_is_quantity_times_price(inv):

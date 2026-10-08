@@ -437,16 +437,14 @@ def run(config, store: AliasStore | None = None, progress: ProgressFn = _noop,
                 rows.append(aggregator.subtotal_row(part, split_col, aggs))
                 extra.append((aggregator.value_label(value), list(detail.columns), rows))
             result.split_count = len(extra)
-        front, charts = [], []
+        front = []
         if result.report is not None:
             result.report = inventory.build_report(detail, issues, result.issue_counts)
             front = result.report.sheets()
-            charts = inventory.chart_specs(result.report)
         try:
             exporter.export_result(out, summary, detail, issues.sorted(),
                                    plain_columns=[aggregator.COL_ROW], extra_sheets=extra,
-                                   front_sheets=front, charts=charts,
-                                   chart_sheet=inventory.SHEET_CHART)
+                                   front_sheets=front)
             result.output_path = out
             if parts and config.split_mode == SPLIT_FILE:
                 _export_split_files(config, out, detail, split_col, parts, aggs, result,

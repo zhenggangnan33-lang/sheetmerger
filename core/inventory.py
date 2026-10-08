@@ -6,7 +6,7 @@
 - 实盘金额 = 实盘数量 × 单价（原表已填写的不覆盖；单价或实盘数量为空时留空）
 - 盘盈盘亏数量 = 实盘数量合计 − 账面数量合计；未盘点（实盘数量为空）的商品不按 0 补，在总览中单独列出
 
-输出 Sheet：总览 / 按仓库 / 按商品编码 / 图表，后面接明细和问题清单。
+输出 Sheet：总览 / 按仓库 / 按商品编码，后面接明细和问题清单。
 """
 from __future__ import annotations
 
@@ -36,12 +36,11 @@ _ROUND_RANK = {"初盘": 1, "一盘": 1, "首盘": 1, "第一轮": 1, "复盘": 
                "三盘": 3, "第三轮": 3, "终盘": 9}
 
 SHEET_OVERVIEW = "总览"
-SHEET_CHART = "图表"
 
 
 @dataclass
 class InventoryReport:
-    """报表各 Sheet 的内容（DataFrame），以及图表引用需要的信息。"""
+    """报表各 Sheet 的内容（DataFrame）。"""
     location: str                                   # 地点列名（仓库 / 门店 / 来源文件）
     overview: pd.DataFrame
     by_location: pd.DataFrame
@@ -281,25 +280,3 @@ def build_report(detail: pd.DataFrame, issues: IssueCollector,
     return InventoryReport(location=loc_label, overview=overview, by_location=by_location,
                            by_code=by_code)
 
-
-def chart_specs(report: InventoryReport) -> list:
-    """图表 Sheet 的内容：各地点盘盈盘亏、实盘金额、账面与实盘对比。"""
-    from .exporter import FMT_FLOAT, FMT_INT, ChartSpec
-    df = report.by_location
-    n = len(df)
-    if not n:
-        return []
-    cols = list(df.columns)
-    pos = {c: i + 1 for i, c in enumerate(cols)}
-    loc = report.location
-    sheet = report.location_sheet
-    diff = [float(v or 0) for v in df["盘盈盘亏数量"].tolist()]
-    out = [ChartSpec(f"各{loc}盘盈盘亏数量（实盘 − 账面）", sheet, 1, [pos["盘盈盘亏数量"]], n,
-                     horizontal=True, signed=True, values=diff)]
-    if "实盘金额" in pos:
-        out.append(ChartSpec(f"各{loc}实盘金额（元）", sheet, 1, [pos["实盘金额"]], n,
-                             horizontal=True, number_format=FMT_FLOAT if any(
-                                 isinstance(v, float) and not v.is_integer()
-                                 for v in df["实盘金额"].tolist()) else FMT_INT))
-    out.append(ChartSpec(f"各{loc}账面数量与实盘数量", sheet, 1, [pos["账面数量"], pos["实盘数量"]], n))
-    return out
